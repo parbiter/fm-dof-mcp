@@ -119,6 +119,12 @@ or you want the log in your terminal; a localhost lock port guarantees only
 one instance ever serves the chat. If you move this repo, rerun
 `deploy_bridge.sh` so `chat_service.env` points at the right place.
 
+Replies stream into the bubble as the DoF writes them, with a short status
+line while he digs through tools. He thinks on the `sonnet` model by
+default; for snappier (if less considered) answers, deploy with
+`DOF_CHAT_MODEL=haiku bash scripts/deploy_bridge.sh` — or set the same
+variable before a manual start.
+
 The panel lives only in the running game session — it is never written
 into your save.
 

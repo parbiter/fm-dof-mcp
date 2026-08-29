@@ -25,6 +25,9 @@ if [ -n "$NODE_BIN" ]; then
     echo "NODE=$NODE_BIN"
     echo "SCRIPT=$HERE/scripts/dof_chat_service.mjs"
     echo "PATH=$PATH"
+    # Optional model override for the DoF's replies (e.g. haiku for speed).
+    # The game-spawned service can't see your shell env, so it rides along here.
+    if [ -n "${DOF_CHAT_MODEL:-}" ]; then echo "MODEL=$DOF_CHAT_MODEL"; fi
   } > "$GAME/BepInEx/plugins/FMBridge/chat_service.env"
   echo "chat service autostart configured (chat_service.env)"
 else

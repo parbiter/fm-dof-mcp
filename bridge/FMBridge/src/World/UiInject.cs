@@ -134,6 +134,12 @@ internal static class UiInject
     private static readonly Color OverlayInputBgColor = new Color(15f / 255f, 17f / 255f, 24f / 255f, 0.9f);
     // rgba(160,150,190,0.55) — dim placeholder text.
     private static readonly Color OverlayPlaceholderColor = new Color(160f / 255f, 150f / 255f, 190f / 255f, 0.55f);
+    // rgba(160,150,190,0.30) — scrollbar thumb at rest, same dim family as the placeholder text.
+    private static readonly Color OverlayScrollThumbColor = new Color(160f / 255f, 150f / 255f, 190f / 255f, 0.30f);
+    // rgba(160,150,190,0.55) — scrollbar thumb under the cursor.
+    private static readonly Color OverlayScrollThumbHoverColor = new Color(160f / 255f, 150f / 255f, 190f / 255f, 0.55f);
+    // rgba(255,255,255,0.04) — near-invisible scrollbar track behind the thumb.
+    private static readonly Color OverlayScrollTrackColor = new Color(1f, 1f, 1f, 0.04f);
 
     private static VisualElement _overlayElement; // live reference to the attached overlay root, or null
     private static int _overlayCloseCount;
@@ -159,6 +165,7 @@ internal static class UiInject
     private static ScrollView _overlayScroll; // live reference to the message ScrollView wrapper, or null
     private static Label _overlaySystemLine; // live reference to the dimmed "listening" line, or null once removed
     private static Label _overlayThinkingLine; // dimmed "checking with the scouts" line while the host computes a reply, or null
+    private static Label _overlayStreamLabel; // label of the open streaming dof bubble (overlay_update), or null when no stream is open
 
     // Raised by the header's "New chat" button, consumed (and reset) by the
     // next overlay_poll so the host service knows to drop its headless
@@ -177,12 +184,13 @@ internal static class UiInject
 
     /// <summary>Dispatch entry point for the ui_inject verb (flat "action"
     /// field: menu_add|menu_remove|menu_status|overlay_add|overlay_remove|
-    /// overlay_show|overlay_hide|overlay_status|overlay_post|overlay_poll|
-    /// overlay_clear|overlay_thinking). Must run on the main thread —
-    /// VoiceServer routes it through Enqueue below. "msg" is the full request
-    /// JsonObject as parsed there: overlay_post reads "from"/"text" and
-    /// overlay_thinking reads "on"/"text" out of it, and a future action can
-    /// read its own fields without a signature change.</summary>
+    /// overlay_show|overlay_hide|overlay_status|overlay_post|overlay_update|
+    /// overlay_poll|overlay_clear|overlay_thinking). Must run on the main
+    /// thread — VoiceServer routes it through Enqueue below. "msg" is the
+    /// full request JsonObject as parsed there: overlay_post reads
+    /// "from"/"text", overlay_update reads "text"/"done" and
+    /// overlay_thinking reads "on"/"label"/"text" out of it, and a future
+    /// action can read its own fields without a signature change.</summary>
     public static JsonObject Handle(string action, JsonNode msg)
     {
         switch (action)
@@ -196,6 +204,7 @@ internal static class UiInject
             case "overlay_hide": return OverlaySetVisible(false);
             case "overlay_status": return OverlayStatus();
             case "overlay_post": return OverlayPost(msg);
+            case "overlay_update": return OverlayUpdate(msg);
             case "overlay_poll": return OverlayPoll();
             case "overlay_clear": return OverlayClear();
             case "overlay_thinking": return OverlayThinking(msg);
@@ -615,6 +624,80 @@ internal static class UiInject
         }
     }
 
+    /// <summary>Streams a growing dof reply into a single bubble. The first
+    /// update opens a "streaming" bubble via the same path as an
+    /// overlay_post from="dof" (system line removed, thinking line hidden,
+    /// auto-scroll registered, bubble cap enforced) and caches its Label;
+    /// each later update replaces that Label's text in place — msg["text"]
+    /// is the full text so far (capped at MaxMessageChars), not a delta.
+    /// msg["done"] = true closes the stream so the next update opens a
+    /// fresh bubble; the cached reference is also dropped by OverlayClear
+    /// (New chat) and whenever it goes stale (overlay rebuilt). done with
+    /// no open stream and no text is an accepted no-op, not an error —
+    /// the host may close defensively after a failure.</summary>
+    private static JsonObject OverlayUpdate(JsonNode msg)
+    {
+        try
+        {
+            string text;
+            try { text = (string)msg?["text"]; } catch { text = null; }
+            bool done = false;
+            try { done = (bool?)msg?["done"] ?? false; } catch { }
+
+            if (string.IsNullOrWhiteSpace(text) && !done)
+                return new JsonObject { ["ok"] = false, ["error"] = "empty-text" };
+            if (text != null && text.Length > MaxMessageChars) text = text.Substring(0, MaxMessageChars);
+
+            var label = _overlayStreamLabel;
+            try { if (label != null && label.parent == null) { label = null; _overlayStreamLabel = null; } } catch { label = null; _overlayStreamLabel = null; }
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                if (label == null)
+                {
+                    AppendBubble("dof", text);
+                    // AppendBubble leaves the new dof bubble as the last
+                    // child of the message area (a dof bubble removes the
+                    // thinking line instead of re-appending it), so the
+                    // Label to mutate on later updates is that bubble's
+                    // single child.
+                    try
+                    {
+                        var msgArea = _overlayMessageArea;
+                        if (msgArea != null && msgArea.childCount > 0)
+                        {
+                            var bubble = msgArea[msgArea.childCount - 1];
+                            if (bubble != null && bubble.childCount > 0)
+                                label = bubble[0].TryCast<Label>();
+                        }
+                    }
+                    catch { label = null; }
+                }
+                else
+                {
+                    try { label.text = text; } catch { }
+                    // The bubble's GeometryChangedEvent only fires when the
+                    // new text changes its height; snap explicitly so every
+                    // update keeps the tail in view.
+                    ScrollToBottom();
+                }
+            }
+
+            _overlayStreamLabel = done ? null : label;
+
+            var area = _overlayMessageArea;
+            int count = 0;
+            try { if (area != null) count = area.childCount; } catch { }
+
+            Navigator._log?.LogInfo($"[Bridge] ui_inject overlay_update: len={text?.Length ?? 0} done={done} streaming={_overlayStreamLabel != null} count={count}");
+            return new JsonObject { ["ok"] = true, ["count"] = count, ["streaming"] = _overlayStreamLabel != null };
+        }
+        catch (Exception e)
+        {
+            return new JsonObject { ["ok"] = false, ["error"] = e.Message };
+        }
+    }
+
     /// <summary>Drains the outbox of user-typed messages queued by the input
     /// row's submit handler (Enter or the send button) since the last poll.
     /// Empty array when nothing is pending. ts is milliseconds off the same
@@ -672,6 +755,7 @@ internal static class UiInject
             }
             _overlaySystemLine = null;
             _overlayThinkingLine = null;
+            _overlayStreamLabel = null; // the bubble it pointed into is gone; next overlay_update starts fresh
             try
             {
                 var sys = BuildSystemLine();
@@ -691,8 +775,9 @@ internal static class UiInject
 
     /// <summary>Shows/hides the transient "checking with the scouts" line at
     /// the bottom of the message area while the host service computes a
-    /// reply: msg["on"] = true/false, optional msg["text"] overrides the
-    /// default wording. Idempotent both ways (on while shown just updates the
+    /// reply: msg["on"] = true/false, optional msg["label"] (or legacy
+    /// msg["text"]) overrides the default wording, capped at 120 chars.
+    /// Idempotent both ways (on while shown just updates the
     /// text; off while hidden is a no-op) — the host also relies on
     /// AppendBubble removing the line automatically when the dof reply
     /// lands, so an explicit off is only a failure-path cleanup.</summary>
@@ -720,8 +805,13 @@ internal static class UiInject
             if (area == null) return new JsonObject { ["ok"] = false, ["reason"] = "no-message-area" };
 
             string text = null;
-            try { text = (string)msg?["text"]; } catch { }
+            try { text = (string)msg?["label"]; } catch { }
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                try { text = (string)msg?["text"]; } catch { }
+            }
             if (string.IsNullOrWhiteSpace(text)) text = "Checking with the scouts…";
+            if (text.Length > 120) text = text.Substring(0, 120);
 
             if (existing != null)
             {
@@ -1372,6 +1462,7 @@ internal static class UiInject
         var header = new VisualElement();
         header.pickingMode = PickingMode.Ignore;
         header.style.height = OverlayHeaderHeight;
+        header.style.flexShrink = 0; // only the message scroll area may flex; a long reply must never squash the header
         header.style.flexDirection = FlexDirection.Row;
         header.style.alignItems = Align.Center;
         header.style.paddingLeft = 16;
@@ -1464,6 +1555,13 @@ internal static class UiInject
     {
         var scroll = new ScrollView { name = ScrollName };
         scroll.style.flexGrow = 1;
+        // The scroll area is the ONLY element in the overlay column allowed
+        // to flex: it absorbs all height changes (minHeight 0 lets it shrink
+        // past its content) while the header/input row pin themselves with
+        // flexShrink 0 — otherwise a tall conversation squashes the input row.
+        scroll.style.flexShrink = 1;
+        scroll.style.minHeight = 0;
+        StyleOverlayScrollbar(scroll);
 
         var area = new VisualElement { name = MessageAreaName };
         area.style.paddingLeft = 12;
@@ -1479,6 +1577,93 @@ internal static class UiInject
         _overlayMessageArea = area;
         _overlaySystemLine = sys;
         return scroll;
+    }
+
+    /// <summary>Restyles the message ScrollView's vertical scrollbar to sit
+    /// flat against the panel: slim near-invisible track, rounded
+    /// low-contrast thumb that brightens on hover, no arrow buttons. The
+    /// game themes its own scrollbars through USS on its own controls —
+    /// none of that reaches a programmatically-built panel, so without this
+    /// the default UI Toolkit scroller chrome (grey track, boxy arrows)
+    /// shows through. Every property is guarded per element/sub-element: if
+    /// an interop build lacks one, the scrollbar keeps default looks there
+    /// but stays functional.</summary>
+    private static void StyleOverlayScrollbar(ScrollView scroll)
+    {
+        try
+        {
+            try
+            {
+                var hs = scroll.horizontalScroller;
+                if (hs != null) hs.style.display = DisplayStyle.None;
+            }
+            catch { }
+
+            var scroller = scroll.verticalScroller;
+            if (scroller == null) return;
+            try { scroller.style.width = 8; } catch { }
+            try { scroller.style.backgroundColor = new Color(0f, 0f, 0f, 0f); } catch { }
+            try { scroller.style.borderLeftWidth = 0; } catch { }
+
+            try { if (scroller.lowButton != null) scroller.lowButton.style.display = DisplayStyle.None; } catch { }
+            try { if (scroller.highButton != null) scroller.highButton.style.display = DisplayStyle.None; } catch { }
+
+            try
+            {
+                var slider = scroller.slider;
+                if (slider != null)
+                {
+                    slider.style.width = 8;
+                    try { slider.style.marginTop = 2; } catch { }
+                    try { slider.style.marginBottom = 2; } catch { }
+                    try { slider.style.backgroundColor = new Color(0f, 0f, 0f, 0f); } catch { }
+                }
+            }
+            catch { }
+
+            // "unity-tracker"/"unity-dragger" are the element names UI
+            // Toolkit's Slider assigns its track and thumb children.
+            var tracker = FindByName(scroller, "unity-tracker", 0);
+            if (tracker != null)
+            {
+                try { tracker.style.backgroundColor = OverlayScrollTrackColor; } catch { }
+                try { tracker.style.borderTopWidth = 0; } catch { }
+                try { tracker.style.borderRightWidth = 0; } catch { }
+                try { tracker.style.borderBottomWidth = 0; } catch { }
+                try { tracker.style.borderLeftWidth = 0; } catch { }
+                try { tracker.style.borderTopLeftRadius = 4; } catch { }
+                try { tracker.style.borderTopRightRadius = 4; } catch { }
+                try { tracker.style.borderBottomLeftRadius = 4; } catch { }
+                try { tracker.style.borderBottomRightRadius = 4; } catch { }
+            }
+
+            var dragger = FindByName(scroller, "unity-dragger", 0);
+            if (dragger != null)
+            {
+                try { dragger.style.backgroundColor = OverlayScrollThumbColor; } catch { }
+                try { dragger.style.width = 8; } catch { }
+                try { dragger.style.left = 0; } catch { }
+                try { dragger.style.borderTopWidth = 0; } catch { }
+                try { dragger.style.borderRightWidth = 0; } catch { }
+                try { dragger.style.borderBottomWidth = 0; } catch { }
+                try { dragger.style.borderLeftWidth = 0; } catch { }
+                try { dragger.style.borderTopLeftRadius = 4; } catch { }
+                try { dragger.style.borderTopRightRadius = 4; } catch { }
+                try { dragger.style.borderBottomLeftRadius = 4; } catch { }
+                try { dragger.style.borderBottomRightRadius = 4; } catch { }
+                try
+                {
+                    dragger.RegisterCallback<MouseEnterEvent>(
+                        Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<EventCallback<MouseEnterEvent>>(
+                            (Action<MouseEnterEvent>)(_ => { dragger.style.backgroundColor = OverlayScrollThumbHoverColor; })));
+                    dragger.RegisterCallback<MouseLeaveEvent>(
+                        Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<EventCallback<MouseLeaveEvent>>(
+                            (Action<MouseLeaveEvent>)(_ => { dragger.style.backgroundColor = OverlayScrollThumbColor; })));
+                }
+                catch { }
+            }
+        }
+        catch { }
     }
 
     /// <summary>The dimmed "listening" placeholder line — built on first
@@ -1597,6 +1782,8 @@ internal static class UiInject
         var row = new VisualElement();
         row.pickingMode = PickingMode.Ignore;
         row.style.height = OverlayInputHeight;
+        row.style.minHeight = OverlayInputHeight;
+        row.style.flexShrink = 0; // pinned: only the message scroll area flexes (see BuildOverlayMessageArea)
         row.style.marginLeft = 12;
         row.style.marginRight = 12;
         row.style.marginTop = 12;

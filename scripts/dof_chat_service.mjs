@@ -32,6 +32,30 @@ const LOCK_PORT = 7778; // singleton guard (localhost only, nothing served)
 // (a manually started service keeps retrying across game restarts instead).
 const MANAGED = process.env.DOF_CHAT_MANAGED === "1";
 
+// Which claude model answers the chat. "sonnet" is the quality/speed
+// default; set DOF_CHAT_MODEL=haiku to trade some football judgement
+// for snappier replies.
+const MODEL = process.env.DOF_CHAT_MODEL || "sonnet";
+
+// How often the growing reply is pushed into the panel while streaming.
+const UPDATE_MS = 400;
+
+// In-character status lines shown while the DoF's tools run (the tool
+// phase produces no reply text, so without these the panel just sits on
+// a spinner for the slowest part of the answer).
+const TOOL_LABELS = {
+  game_status: "checking the day's diary…",
+  my_club: "checking the books…",
+  squad_report: "walking the training ground…",
+  query_players: "flicking through scout reports…",
+  read_entity: "pulling a file from the drawer…",
+  get_role_attributes: "pulling a file from the drawer…",
+  shortlist: "updating the shortlist…",
+  inbox: "going through the mail…",
+};
+// MCP tool names arrive as mcp__<server>__<tool>; the last segment keys the map.
+const toolLabel = (name) => TOOL_LABELS[String(name).split("__").pop()] ?? "working on it…";
+
 // Chat-only layer on top of the canonical dof-persona.md (which the MCP
 // server also serves, roleplay-free): in-character voice + panel-sized
 // formatting. The persona's data-honesty rules still win — character never
@@ -154,8 +178,13 @@ function runClaude(userText, gen) {
   return new Promise((resolve) => {
     const args = [
       "-p", userText,
-      "--model", "sonnet",
-      "--output-format", "json",
+      "--model", MODEL,
+      // stream-json (with partial chunks) instead of plain json so the
+      // reply can grow in the panel while it's being written; the CLI
+      // insists on --verbose alongside stream-json in -p mode.
+      "--output-format", "stream-json",
+      "--include-partial-messages",
+      "--verbose",
       "--mcp-config", mcpConfigPath,
       "--strict-mcp-config",
       "--allowedTools", "mcp__fm-dof__*",
@@ -163,12 +192,69 @@ function runClaude(userText, gen) {
     ];
     if (sessionId) args.push("--resume", sessionId);
     const child = spawn("claude", args, { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "", err = "";
+    let buf = "", err = "";
     const kill = setTimeout(() => child.kill("SIGKILL"), CLAUDE_TIMEOUT_MS);
-    child.stdout.on("data", (d) => (out += d));
+
+    // Streaming state. `text` holds the current assistant message's prose
+    // and resets on each message_start, so a "let me check the books"
+    // aside gets replaced by the real answer in the same bubble rather
+    // than concatenated with it. The authoritative final text still comes
+    // from the result event, same as the old json format. If the bridge
+    // predates overlay_update, the first failure flips streamOk and the
+    // reply falls back to drainQueue's single overlay_post — the old
+    // behavior, minus the show.
+    let text = "", sawText = false, streamOk = true;
+    let pushTimer = null;
+    let resultEvent = null;
+
+    // Throttled push of the accumulated text into the growing bubble.
+    const push = () => {
+      if (pushTimer || !streamOk || gen !== chatGen) return;
+      pushTimer = setTimeout(() => {
+        pushTimer = null;
+        if (!streamOk || gen !== chatGen || !text) return;
+        // call() resolves bridge-level errors (an old dll answers
+        // {ok:false, error:"unknown-action:…"}) rather than rejecting,
+        // so failure has two shapes and both must flip the fallback.
+        call({ method: "ui_inject", action: "overlay_update", text: text.slice(0, BUBBLE_CAP), done: false })
+          .then((res) => { if (res?.result?.ok === false) streamOk = false; })
+          .catch(() => { streamOk = false; });
+      }, UPDATE_MS);
+    };
+
+    const onEvent = (j) => {
+      if (j.type === "result") { resultEvent = j; return; }
+      if (j.type !== "stream_event" || gen !== chatGen) return;
+      const ev = j.event ?? {};
+      if (ev.type === "message_start") {
+        text = "";
+      } else if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
+        // No labels once prose has started: the first overlay_update
+        // already hid the indicator, and the text is company enough.
+        if (!sawText && streamOk)
+          call({ method: "ui_inject", action: "overlay_thinking", on: true, label: toolLabel(ev.content_block.name) }).catch(() => {});
+      } else if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+        text += ev.delta.text;
+        sawText = true;
+        push();
+      }
+    };
+
+    child.stdout.on("data", (d) => {
+      buf += d;
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        try { onEvent(JSON.parse(line)); } catch { }
+      }
+    });
     child.stderr.on("data", (d) => (err += d));
-    child.on("close", (code) => {
+
+    child.on("close", async (code) => {
       clearTimeout(kill);
+      if (pushTimer) { clearTimeout(pushTimer); pushTimer = null; }
       if (code !== 0) {
         log("claude exited", code, err.slice(0, 300));
         if (sessionId) {
@@ -180,16 +266,25 @@ function runClaude(userText, gen) {
         }
         return resolve({ ok: false, text: "Sorry, I couldn't reach my desk just now. Try me again." });
       }
-      try {
-        const j = JSON.parse(out);
-        // A "New chat" click mid-answer bumps chatGen; saving this run's
-        // session id then would resurrect the abandoned conversation.
-        if (j.session_id && gen === chatGen) saveSession(j.session_id);
-        const text = (j.result ?? "").trim();
-        resolve({ ok: true, text: text || "(no answer)" });
-      } catch {
-        resolve({ ok: false, text: "Sorry, I garbled that one. Ask me again." });
+      if (!resultEvent) {
+        return resolve({ ok: false, text: "Sorry, I garbled that one. Ask me again." });
       }
+      // A "New chat" click mid-answer bumps chatGen; saving this run's
+      // session id then would resurrect the abandoned conversation.
+      if (resultEvent.session_id && gen === chatGen) saveSession(resultEvent.session_id);
+      const finalText = (resultEvent.result ?? "").trim() || "(no answer)";
+      // Finalize the streamed bubble in place; streamed:true tells
+      // drainQueue the reply already landed in the panel.
+      let streamed = false;
+      if (streamOk && gen === chatGen) {
+        try {
+          const res = await call({ method: "ui_inject", action: "overlay_update", text: finalText.slice(0, BUBBLE_CAP), done: true });
+          if (res?.result?.ok === false) throw new Error(res.result.error || "overlay_update refused");
+          streamed = true;
+          call({ method: "ui_inject", action: "overlay_thinking", on: false }).catch(() => {});
+        } catch { /* fall through to overlay_post in drainQueue */ }
+      }
+      resolve({ ok: true, text: finalText, streamed });
     });
   });
 }
@@ -221,6 +316,7 @@ async function drainQueue() {
       call({ method: "ui_inject", action: "overlay_thinking", on: false }).catch(() => {});
       continue;
     }
+    if (reply.streamed) continue; // already finalized in the panel by runClaude
     try {
       await call({ method: "ui_inject", action: "overlay_post", from: "dof", text: reply.text.slice(0, BUBBLE_CAP) });
     } catch (e) {
@@ -265,7 +361,7 @@ lock.once("listening", start);
 lock.listen(LOCK_PORT, "127.0.0.1");
 
 function start() {
-  log("DoF chat service starting; repo:", REPO, MANAGED ? "(game-managed)" : "");
+  log("DoF chat service starting; repo:", REPO, "model:", MODEL, MANAGED ? "(game-managed)" : "");
   connect();
   poll();
 }

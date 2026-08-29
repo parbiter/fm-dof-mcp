@@ -37,8 +37,8 @@ namespace FMBridge;
                     "Host a localhost WebSocket server for external control");
                 var voicePort = Config.Bind("Voice", "Port", 7777,
                     "TCP port for the WebSocket server (localhost only)");
-                var allowCommands = Config.Bind("Voice", "AllowCommands", false,
-                    "Permit write commands over the WS protocol (continue)");
+                var allowCommands = Config.Bind("Voice", "AllowCommands", true,
+                    "Permit write commands over the WS protocol; this build only exposes the advise-only surface (shortlist management)");
                 if (voiceEnabled.Value)
                 {
                     _voice = new VoiceServer(Log, voicePort.Value, allowCommands.Value);

@@ -30,7 +30,7 @@ internal static class ChatServiceLauncher
                 return;
             }
 
-            string node = null, script = null, path = null;
+            string node = null, script = null, path = null, model = null;
             foreach (var line in File.ReadAllLines(envFile))
             {
                 var i = line.IndexOf('=');
@@ -40,6 +40,7 @@ internal static class ChatServiceLauncher
                 if (key == "NODE") node = val;
                 else if (key == "SCRIPT") script = val;
                 else if (key == "PATH") path = val;
+                else if (key == "MODEL") model = val;
             }
             if (node == null || script == null || !File.Exists(node) || !File.Exists(script))
             {
@@ -66,6 +67,9 @@ internal static class ChatServiceLauncher
             // bridge socket closes instead of retrying forever.
             psi.Environment["DOF_CHAT_MANAGED"] = "1";
             if (!string.IsNullOrEmpty(path)) psi.Environment["PATH"] = path;
+            // Model override recorded at deploy time — the game's env can't
+            // carry the user's shell DOF_CHAT_MODEL, so it travels via the file.
+            if (!string.IsNullOrEmpty(model)) psi.Environment["DOF_CHAT_MODEL"] = model;
 
             _proc = Process.Start(psi);
             log.LogInfo($"[Bridge] chat service started (pid {_proc?.Id}), log: {logFile}");
