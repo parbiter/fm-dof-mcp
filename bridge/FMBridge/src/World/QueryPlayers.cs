@@ -68,6 +68,14 @@ internal static class QueryPlayers
     // Toggle-click retry tuning (repeat-call bug fix -- see the
     // ClickToggleWithRetry doc comment for the root cause).
     private const int ToggleClickDeadlineMs = 6000;
+    // Checkbox-column activation marker (PollPlayerDatabaseActive): quick
+    // probe for the fast-path (we're either already there or we're not),
+    // longer allowance after a fresh tab click where the column can lag
+    // the table itemCount by seconds mid-transition.
+    private const int FastPathActiveCheckMs = 1500;
+    private const int PdActiveDeadlineMs = 4000;
+    private const int PdActiveRecheckSettleMs = 500;
+    private const int PdActiveRecheckDeadlineMs = 1500;
     private const int ToggleSettleDelayMs = 500;
     // Longer settle before a revert RETRY attempt (live verification
     // found a silent stuck-toggle case) -- gives the UI more
@@ -625,12 +633,16 @@ internal static class QueryPlayers
         // Also guard the fast-path against the STALE-widget hazard (see the
         // recovery block below): a "playertable" match with a stable
         // itemCount can still be a leftover, no-longer-visible instance
-        // while the Overview dashboard tab is actually showing. Reject the
-        // fast-path in that case too so we fall through to the full re-nav
-        // path, which carries the toggle-and-retry recovery.
-        var overviewCheck = await OnQueue(queue, _ => Navigator.UiFind2("PlayerSearch", 1, 0, 0, 0, 0, false));
-        bool onOverview = AsInt(overviewCheck?["count"]) > 0;
-        if (already?["ok"]?.GetValue<bool>() == true && AsInt(already["count"]) > 0 && alreadyIsRealTable && !onOverview)
+        // while the Overview dashboard tab is actually showing. The check
+        // here must be the POSITIVE checkbox-column marker (see
+        // PollPlayerDatabaseActive) -- this used to test for the Overview
+        // dashboard's "PlayerSearch" tile instead, which also exists on the
+        // Player Database screen itself whenever its tiles strip is shown,
+        // so the fast-path was silently unreachable and every call re-drove
+        // the full Portal->Recruitment->tab teardown/rebuild it was written
+        // to avoid.
+        if (already?["ok"]?.GetValue<bool>() == true && AsInt(already["count"]) > 0 && alreadyIsRealTable
+            && await PollPlayerDatabaseActive(queue, FastPathActiveCheckMs))
         {
             int fastCount = await StabilizePlayertableCount(queue, NavDeadlineMs);
             steps.Add(new JsonObject { ["step"] = "fast-path:already-on-player-database", ["count"] = fastCount });
@@ -739,44 +751,113 @@ internal static class QueryPlayers
         // the one actually showing on top -- so the widget-presence check
         // is fooled the same way the earlier "playertable"-substring bug
         // fooled it, just via staleness instead of substring collision.
-        // Symptom observed live: after coming from the Shortlists dropdown
-        // tab, clicking "Player Database" reported ok:true and playertable
-        // read a stable real itemCount, yet the Overview dashboard's
-        // "PlayerSearch" tile was still on screen and the row checkboxes
-        // (which only exist on the real Player Database view) were entirely
-        // absent. Reproducibly fixed live by toggling to a different tab
-        // and back. Guard against it here: if "PlayerSearch" (an
-        // Overview-only marker) is still present after a "successful"
-        // reach, the click never really took -- bounce off Overview and
-        // retry once before giving up.
-        for (int recoveryAttempt = 0; recoveryAttempt < 2; recoveryAttempt++)
+        // Reproducibly fixed live by toggling to a different tab and back.
+        // Verify activation with the POSITIVE checkbox-column marker (see
+        // PollPlayerDatabaseActive -- the old "PlayerSearch is gone"
+        // negative marker false-positived on the real Player Database
+        // screen); if it never shows, toggle off Overview and retry, and if
+        // it STILL never shows, FAIL LOUDLY. The previous version of this
+        // loop exited without error when its recovery attempts ran out,
+        // which let callers (proven live: shortlist add) drive checkbox/
+        // context-menu clicks against a screen that was never actually
+        // switched.
+        bool pdActive = false;
+        for (int recoveryAttempt = 0; recoveryAttempt < 3; recoveryAttempt++)
         {
-            var stale = await OnQueue(queue, _ => Navigator.UiFind2("PlayerSearch", 1, 0, 0, 0, 0, false));
-            bool stillOnOverview = AsInt(stale?["count"]) > 0;
-            steps.Add(new JsonObject { ["step"] = "check:overview-marker-gone", ["stillOnOverview"] = stillOnOverview });
-            if (!stillOnOverview) break;
-
-            // Same ClickByText fix as above: resolve+click "Overview" and
-            // "Player Database" by their own rendered text instead of a
-            // raw UiClick index that can silently disagree with whatever
-            // collection originally located the tab.
-            var awayClick = await OnQueue(queue, _ => Navigator.ClickByText("SIButton", "Overview"));
-            await Task.Delay(PollIntervalMs);
-            var backClick = await OnQueue(queue, _ => Navigator.ClickByText("SIButton", "Player Database"));
-            steps.Add(new JsonObject
+            if (recoveryAttempt > 0)
             {
-                ["step"] = "recovery:toggle-overview-then-playerdatabase",
-                ["attempt"] = recoveryAttempt,
-                ["awayOk"] = awayClick?["ok"]?.GetValue<bool>() == true,
-                ["backOk"] = backClick?["ok"]?.GetValue<bool>() == true,
-            });
+                // Same ClickByText fix as above: resolve+click "Overview"
+                // and "Player Database" by their own rendered text instead
+                // of a raw UiClick index that can silently disagree with
+                // whatever collection originally located the tab.
+                var awayClick = await OnQueue(queue, _ => Navigator.ClickByText("SIButton", "Overview"));
+                await Task.Delay(PollIntervalMs);
+                var backClick = await OnQueue(queue, _ => Navigator.ClickByText("SIButton", "Player Database"));
+                steps.Add(new JsonObject
+                {
+                    ["step"] = "recovery:toggle-overview-then-playerdatabase",
+                    ["attempt"] = recoveryAttempt,
+                    ["awayOk"] = awayClick?["ok"]?.GetValue<bool>() == true,
+                    ["backOk"] = backClick?["ok"]?.GetValue<bool>() == true,
+                });
 
-            finalCount = await StabilizePlayertableCount(queue, NavDeadlineMs);
-            steps.Add(new JsonObject { ["step"] = "poll:playertable-stable-after-recovery", ["count"] = finalCount });
-            if (finalCount <= 0) return (false, "playertable-not-populated-after-recovery", steps, 0);
+                finalCount = await StabilizePlayertableCount(queue, NavDeadlineMs);
+                steps.Add(new JsonObject { ["step"] = "poll:playertable-stable-after-recovery", ["count"] = finalCount });
+                if (finalCount <= 0) return (false, "playertable-not-populated-after-recovery", steps, 0);
+            }
+
+            // Require the marker to hold across TWO reads separated by a
+            // settle: live testing (2026-08-29, remove-after-list) caught a
+            // single positive read during a tab switch that only took
+            // TRANSIENTLY -- coming from the Shortlists dropdown tab, the
+            // Player Database screen mounted long enough to pass one
+            // checkbox scan, then flipped back to Shortlists (playertable
+            // gone from the visual tree entirely) before the caller's own
+            // row scan began. The toggle below is the same recovery proven
+            // to unstick exactly this flip-back case.
+            pdActive = await PollPlayerDatabaseActive(queue, PdActiveDeadlineMs);
+            if (pdActive)
+            {
+                await Task.Delay(PdActiveRecheckSettleMs);
+                pdActive = await PollPlayerDatabaseActive(queue, PdActiveRecheckDeadlineMs);
+            }
+            steps.Add(new JsonObject { ["step"] = "check:pd-checkbox-column", ["attempt"] = recoveryAttempt, ["active"] = pdActive });
+            if (pdActive) break;
         }
+        if (!pdActive)
+            return (false, "player-database-tab-activation-failed (checkbox column never appeared; screen likely still on Overview)", steps, 0);
 
         return (true, null, steps, finalCount);
+    }
+
+    /// <summary>
+    /// True when the Player Database view is ACTUALLY interactive: the
+    /// playertable widget has a real on-screen rect AND at least one row
+    /// checkbox ("unity-checkmark") inside that rect. This is the positive
+    /// marker proven live (2026-08-28 session, documented at length in
+    /// Shortlist.cs's TryResolveClickAndVerify): the checkbox column exists
+    /// only on the real Player Database view and is entirely absent while
+    /// the table is merely stale-mounted behind Overview. The previous
+    /// marker here was NEGATIVE -- "the Overview dashboard's PlayerSearch
+    /// tile is gone" -- and live testing on 2026-08-29 showed that tile
+    /// also matches on the Player Database screen itself when its tiles
+    /// strip is visible, so every reach false-positived into two pointless
+    /// Overview toggles and the already-there fast-path never fired.
+    /// Polls under a deadline because the checkbox column can lag the
+    /// table's own itemCount by seconds mid-transition (same hazard
+    /// documented in Shortlist.cs's rect+checkbox stabilization loop).
+    /// </summary>
+    private static async Task<bool> PollPlayerDatabaseActive(FMBridge.Voice.MainThreadQueue queue, long deadlineMs)
+    {
+        var deadline = Environment.TickCount64 + deadlineMs;
+        while (true)
+        {
+            var tableRect = await OnQueue(queue, _ => Navigator.UiFind2("playertable", 5, 0, 0, 0, 0, false));
+            JsonObject best = null;
+            if (tableRect?["ok"]?.GetValue<bool>() == true && tableRect["rows"] is JsonArray trArr)
+            {
+                foreach (var r in trArr)
+                {
+                    var ro = r as JsonObject;
+                    if (ro == null) continue;
+                    // UiFind2 matches by SUBSTRING, so the Shortlists tab's
+                    // own "playertableshortlist" widget matches too -- and
+                    // its rows carry checkmarks, which would false-positive
+                    // this marker on the wrong screen. Exact name only.
+                    if (!string.Equals((string)ro["name"], "playertable", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (best == null || AsInt(ro["w"]) * AsInt(ro["h"]) > AsInt(best["w"]) * AsInt(best["h"]))
+                        best = ro;
+                }
+            }
+            if (best != null && AsInt(best["w"]) > 0 && AsInt(best["h"]) > 0)
+            {
+                int x = AsInt(best["x"]), y = AsInt(best["y"]), w = AsInt(best["w"]), h = AsInt(best["h"]);
+                var scan = await OnQueue(queue, _ => Navigator.UiFind2("unity-checkmark", 50, x, y, x + w, y + h, false));
+                if (scan?["ok"]?.GetValue<bool>() == true && AsInt(scan["count"]) > 0) return true;
+            }
+            if (Environment.TickCount64 >= deadline) return false;
+            await Task.Delay(PollIntervalMs);
+        }
     }
 
     /// <summary>

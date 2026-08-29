@@ -271,27 +271,54 @@ internal static class Shortlist
         if (addClick?["ok"]?.GetValue<bool>() != true)
             return new JsonObject { ["ok"] = false, ["error"] = "add-to-shortlist-click-failed: " + (string)addClick?["error"], ["menu"] = menu, ["locate"] = locateInfo };
 
-        bool namesShown = await PollUntil(queue,
-            () => Navigator.FindByNameTexts("ContentBaseElement"),
-            r => TextsContain(r, shortlistName), MenuDeadlineMs);
-        if (!namesShown)
+        // The "Add To Shortlist" submenu has TWO shapes. With more than one
+        // shortlist it lists shortlist NAMES (each opening its own duration
+        // sub-level). With exactly ONE shortlist the game SKIPS the name
+        // level entirely and opens the duration list directly -- live-
+        // reproduced 2026-08-29 on a save whose only shortlist was
+        // "(Default)": the submenu showed Indefinitely/1 Month/3 Months/
+        // 6 Months/1 Year and no shortlist name anywhere, so the old
+        // names-only poll below timed out and every add failed with
+        // shortlist-name-not-in-submenu. Poll for EITHER shape and branch.
+        bool namesShown = false, durationsDirect = false;
+        var submenuDeadline = Environment.TickCount64 + MenuDeadlineMs;
+        while (Environment.TickCount64 < submenuDeadline)
+        {
+            var sub = await OnQueue(queue, () => Navigator.FindByNameTexts("ContentBaseElement"));
+            if (TextsContain(sub, shortlistName)) { namesShown = true; break; }
+            if (TextsContain(sub, duration)) { durationsDirect = true; break; }
+            await Task.Delay(PollIntervalMs);
+        }
+        if (!namesShown && !durationsDirect)
         {
             var seen = await OnQueue(queue, () => Navigator.FindByNameTexts("ContentBaseElement"));
             await CloseActionsMenu(queue);
             return new JsonObject { ["ok"] = false, ["error"] = "shortlist-name-not-in-submenu:" + shortlistName, ["seen"] = seen, ["locate"] = locateInfo };
         }
 
-        var nameClick = await OnQueue(queue, () => Navigator.ClickByText("ContentBaseElement", shortlistName));
-        if (nameClick?["ok"]?.GetValue<bool>() != true)
-            return new JsonObject { ["ok"] = false, ["error"] = "shortlist-name-click-failed: " + (string)nameClick?["error"], ["locate"] = locateInfo };
-
-        bool durationsShown = await PollUntil(queue,
-            () => Navigator.FindByNameTexts("ContentBaseElement"),
-            r => TextsContain(r, duration), MenuDeadlineMs);
-        if (!durationsShown)
+        string submenuNote = "name-level-clicked";
+        if (namesShown)
         {
-            var seen = await OnQueue(queue, () => Navigator.FindByNameTexts("ContentBaseElement"));
-            return new JsonObject { ["ok"] = false, ["error"] = "duration-not-in-submenu:" + duration, ["seen"] = seen, ["locate"] = locateInfo };
+            var nameClick = await OnQueue(queue, () => Navigator.ClickByText("ContentBaseElement", shortlistName));
+            if (nameClick?["ok"]?.GetValue<bool>() != true)
+                return new JsonObject { ["ok"] = false, ["error"] = "shortlist-name-click-failed: " + (string)nameClick?["error"], ["locate"] = locateInfo };
+
+            bool durationsShown = await PollUntil(queue,
+                () => Navigator.FindByNameTexts("ContentBaseElement"),
+                r => TextsContain(r, duration), MenuDeadlineMs);
+            if (!durationsShown)
+            {
+                var seen = await OnQueue(queue, () => Navigator.FindByNameTexts("ContentBaseElement"));
+                return new JsonObject { ["ok"] = false, ["error"] = "duration-not-in-submenu:" + duration, ["seen"] = seen, ["locate"] = locateInfo };
+            }
+        }
+        else
+        {
+            // Single-shortlist shape: the game offers no name to click, so
+            // the add can only go to the one shortlist that exists. Note it
+            // in the result so a caller who asked for a name that does NOT
+            // match that sole shortlist can see what actually happened.
+            submenuNote = "single-shortlist:name-level-skipped-by-game";
         }
 
         var durationClick = await OnQueue(queue, () => Navigator.ClickByText("ContentBaseElement", duration));
@@ -299,7 +326,7 @@ internal static class Shortlist
             return new JsonObject { ["ok"] = false, ["error"] = "duration-click-failed: " + (string)durationClick?["error"], ["locate"] = locateInfo };
 
         await Task.Delay(SettleDelayMs);
-        return new JsonObject { ["ok"] = true, ["uid"] = uid, ["name"] = shortlistName, ["duration"] = duration, ["note"] = "add-committed", ["locate"] = locateInfo };
+        return new JsonObject { ["ok"] = true, ["uid"] = uid, ["name"] = shortlistName, ["duration"] = duration, ["note"] = "add-committed", ["submenu"] = submenuNote, ["locate"] = locateInfo };
     }
 
     /// <summary>
