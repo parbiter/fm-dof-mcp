@@ -1,0 +1,19 @@
+# .NET
+bin/
+obj/
+bin_release_dof/
+obj_release_dof/
+*.user
+
+# Node
+node_modules/
+dist/
+npm-debug.log*
+*.tsbuildinfo
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/

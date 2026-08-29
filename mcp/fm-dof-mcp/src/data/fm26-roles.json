@@ -1,0 +1,666 @@
+{
+  "_meta": {
+    "source": "Harvested live from Football Manager 26's own Tactics Planner > Player Roles UI (PlayerInstructionRoleEditCard), via the FMBridge WebSocket automation bridge driving the running game.",
+    "harvest_date": "2026-08-28",
+    "method": "For each position group, one XI player's role picker was opened from the Tactics Planner table; each candidate role card was selected (browse-only, never applied/confirmed) and its right-hand detail panel (role name, description, Key Attributes list) was read directly from the UI Toolkit visual tree.",
+    "fidelity_note": "Only role_name, description, and the NAMES of attributes the game highlights under 'Key Attributes' are role-intrinsic and recorded here. The game does not expose a separate 'preferable attributes' tier - only one 'Key Attributes' list is shown, so that field is explicitly marked missing rather than inferred. Numeric attribute VALUES and the word suitability rating (e.g. 'Excellent') shown alongside each role are specific to whichever player's role card was open at harvest time, NOT role-intrinsic, and are deliberately excluded from this file.",
+    "truncation_note": "Some descriptions are cut off mid-sentence at exactly 240 characters. This is a hard cap in the bridge's text-extraction code (ExtractOwnText in Navigator.cs), not a game-side or transcription limit. Affected roles carry a 'description_note' field.",
+    "roles_harvested": 43,
+    "position_groups_harvested": 9,
+    "position_groups": [
+      "GK",
+      "D (R)",
+      "D (C)",
+      "D (L)",
+      "DM",
+      "AM (R)",
+      "AM (C)",
+      "AM (L)",
+      "ST (C)"
+    ],
+    "coverage_caveat": "Position groups NOT harvested at all: M (C) and D/WB (L) (wing-back), both only present on the bench (substitutes) in the tactic used for harvesting. Bench players' role-edit card could not be opened via the same Tactics Planner table click path used for the starting XI (the click executed but no PlayerInstructionRoleEditCard opened - nav_history and on-screen state were unaffected), and switching a bench player into the XI to reach it was avoided because it would have required changing the tactic, which was disallowed. Within ST (C), a 6th role 'False Nine' is confirmed to exist (visible in the role list, name read directly from the game) but sits below the scrollable role-picker's visible viewport; the bridge has no scroll/keyboard-navigation verb to bring it into view, so its description and key attributes could not be read and are marked missing below rather than guessed. Every other role in every harvested position group (3 roles for GK, 4 for D(C), 5 each for D(R)/D(L)/DM/AM(R)/AM(C)/AM(L), 6 for ST(C) including the name-only False Nine) was accounted for - no roles were silently dropped."
+  },
+  "positions": {
+    "GK": [
+      {
+        "role_name": "Goalkeeper",
+        "key_attributes": [
+          "Handling",
+          "Aerial Reach",
+          "Command Of Area",
+          "Communication",
+          "Positioning",
+          "Reflexes",
+          "Agility",
+          "Concentration"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Goalkeeper can distribute the ball in different ways depending on the team's playing strategy."
+      },
+      {
+        "role_name": "Ball-Playing Goalkeeper",
+        "key_attributes": [
+          "Handling",
+          "Aerial Reach",
+          "Command Of Area",
+          "Communication",
+          "Kicking",
+          "Positioning",
+          "Reflexes",
+          "Agility"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Ball-Playing Goalkeeper looks to play an active role in their team's build-up play, often moving out of their goal to be in a position to receive the ball."
+      },
+      {
+        "role_name": "No-Nonsense Goalkeeper",
+        "key_attributes": [
+          "Handling",
+          "Aerial Reach",
+          "Command Of Area",
+          "Communication",
+          "Positioning",
+          "Reflexes",
+          "Agility",
+          "Concentration"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The No-Nonsense Goalkeeper adopts a cautious approach, preferring to stay nearer to their goal and taking as few risks as possible with the ball at their feet when put under pressure."
+      }
+    ],
+    "D (R)": [
+      {
+        "role_name": "Full Back",
+        "key_attributes": [
+          "Marking",
+          "Tackling",
+          "Anticipation",
+          "Positioning",
+          "Teamwork",
+          "Acceleration",
+          "Concentration"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Full-Back is a key player in modern football, having to supplement their traditional defensive duties with overlapping runs down the wing to support forward play and help attacks overload the final third."
+      },
+      {
+        "role_name": "Wing Back",
+        "key_attributes": [
+          "Crossing",
+          "Marking",
+          "Tackling",
+          "Teamwork",
+          "Work Rate",
+          "Acceleration",
+          "Stamina",
+          "Pace"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Wing-Back combines the responsibilities of a Full-Back and a Winger, providing width to the team throughout the attack."
+      },
+      {
+        "role_name": "Inside Wing-Back",
+        "key_attributes": [
+          "Passing",
+          "Tackling",
+          "Anticipation",
+          "Decisions",
+          "Positioning",
+          "Teamwork",
+          "Acceleration",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Looking to move into central areas of the pitch as their team progresses with the ball, the Inside Wing-Back supports central passing networks, as well as providing vital protection against central counter-attacks when the ball is turned ov",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      },
+      {
+        "role_name": "Inside Full-Back",
+        "key_attributes": [
+          "Heading",
+          "Marking",
+          "Tackling",
+          "Anticipation",
+          "Positioning",
+          "Strength"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Inside Full-Back is a player whose specialist role involves moving inside to become an extra central defender during the attack."
+      },
+      {
+        "role_name": "Playmaking Wing-Back",
+        "key_attributes": [
+          "Passing",
+          "Tackling",
+          "Vision",
+          "Decisions",
+          "First Touch",
+          "Technique",
+          "Teamwork",
+          "Acceleration"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Similarly to the Inverted Wing-Back, the Playmaking Wing-Back will try to move into central areas of the pitch to support central passing networks whilst offering vital protection against central counter-attacks."
+      }
+    ],
+    "D (C)": [
+      {
+        "role_name": "Centre-Back",
+        "key_attributes": [
+          "Heading",
+          "Marking",
+          "Tackling",
+          "Anticipation",
+          "Positioning",
+          "Strength",
+          "Jumping Reach"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The main job of the Centre-Back is to provide protection to the team, being in a position where they can be ready to react to attacking threats when the ball is turned over."
+      },
+      {
+        "role_name": "Advanced Center-Back",
+        "key_attributes": [
+          "Heading",
+          "Marking",
+          "Passing",
+          "Tackling",
+          "Anticipation",
+          "Decisions",
+          "Positioning",
+          "Technique"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The first job of the Advanced Centre-Back is to provide protection to the team, being in a position where they can be ready to react to attacking threats when the ball is turned over."
+      },
+      {
+        "role_name": "Ball-Playing Center-Back",
+        "key_attributes": [
+          "Heading",
+          "Marking",
+          "Passing",
+          "Tackling",
+          "Anticipation",
+          "Positioning",
+          "Strength",
+          "Jumping Reach"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The two principal tasks of the Ball-Playing Centre-Back are to provide protection to the team whilst also playing line-breaking passes and through balls from deep to progress the ball up the pitch."
+      },
+      {
+        "role_name": "No-Nonsense Center-Back",
+        "key_attributes": [
+          "Heading",
+          "Marking",
+          "Tackling",
+          "Anticipation",
+          "Positioning",
+          "Strength",
+          "Jumping Reach"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The No-Nonsense Centre-Back is focused on being the last outfield protection a team has, being in a position to be ready to defend at any moment, while also looking to minimize the amount of risks they take with the ball at their feet."
+      }
+    ],
+    "D (L)": [
+      {
+        "role_name": "Full Back",
+        "key_attributes": [
+          "Marking",
+          "Tackling",
+          "Anticipation",
+          "Positioning",
+          "Teamwork",
+          "Acceleration",
+          "Concentration"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Full-Back is a key player in modern football, having to supplement their traditional defensive duties with overlapping runs down the wing to support forward play and help attacks overload the final third."
+      },
+      {
+        "role_name": "Wing Back",
+        "key_attributes": [
+          "Crossing",
+          "Marking",
+          "Tackling",
+          "Teamwork",
+          "Work Rate",
+          "Acceleration",
+          "Stamina",
+          "Pace"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Wing-Back combines the responsibilities of a Full-Back and a Winger, providing width to the team throughout the attack."
+      },
+      {
+        "role_name": "Inside Wing-Back",
+        "key_attributes": [
+          "Passing",
+          "Tackling",
+          "Anticipation",
+          "Decisions",
+          "Positioning",
+          "Teamwork",
+          "Acceleration",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Looking to move into central areas of the pitch as their team progresses with the ball, the Inside Wing-Back supports central passing networks, as well as providing vital protection against central counter-attacks when the ball is turned ov",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      },
+      {
+        "role_name": "Inside Full-Back",
+        "key_attributes": [
+          "Heading",
+          "Marking",
+          "Tackling",
+          "Anticipation",
+          "Positioning",
+          "Strength"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Inside Full-Back is a player whose specialist role involves moving inside to become an extra central defender during the attack."
+      },
+      {
+        "role_name": "Playmaking Wing-Back",
+        "key_attributes": [
+          "Passing",
+          "Tackling",
+          "Vision",
+          "Decisions",
+          "First Touch",
+          "Technique",
+          "Teamwork",
+          "Acceleration"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Similarly to the Inverted Wing-Back, the Playmaking Wing-Back will try to move into central areas of the pitch to support central passing networks whilst offering vital protection against central counter-attacks."
+      }
+    ],
+    "DM": [
+      {
+        "role_name": "Defensive Midfielder",
+        "key_attributes": [
+          "Tackling",
+          "Anticipation",
+          "Positioning",
+          "Teamwork",
+          "Concentration"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Defensive Midfielder's main responsibility is to position themselves in front of the team's defence and help protect them from counter-attacking threats."
+      },
+      {
+        "role_name": "Deep-Lying Playmaker",
+        "key_attributes": [
+          "Passing",
+          "Vision",
+          "Decisions",
+          "First Touch",
+          "Technique",
+          "Teamwork",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Operating in the space between the defence and the midfield, the Deep-Lying Playmaker aims to initiate attacking moves via pinpoint passes to players positioned higher up the pitch."
+      },
+      {
+        "role_name": "Box-To-Box Midfielder",
+        "key_attributes": [
+          "Off The Ball",
+          "Passing",
+          "Tackling",
+          "Teamwork",
+          "Work Rate",
+          "Stamina"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The non-stop dynamism of the Box-to-Box Midfielder enables them to contribute greatly to both attacking play during the build-up and in the final third."
+      },
+      {
+        "role_name": "Half Back",
+        "key_attributes": [
+          "Heading",
+          "Marking",
+          "Tackling",
+          "Anticipation",
+          "Positioning",
+          "Teamwork",
+          "Strength",
+          "Jumping Reach"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "A defensive midfielder who looks to drop into their team's defensive line as they progress the ball up the pitch, the Half-Back acts as an additional central defender."
+      },
+      {
+        "role_name": "Box-To-Box Playmaker",
+        "key_attributes": [
+          "Off The Ball",
+          "Passing",
+          "Vision",
+          "Decisions",
+          "First Touch",
+          "Technique",
+          "Teamwork",
+          "Work Rate"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Box-to-Box Playmaker is the heartbeat of their team, looking to be a creative outlet from both deep and advanced areas of the pitch."
+      }
+    ],
+    "AM (R)": [
+      {
+        "role_name": "Winger",
+        "key_attributes": [
+          "Crossing",
+          "Dribbling",
+          "Technique",
+          "Teamwork",
+          "Acceleration",
+          "Pace",
+          "Agility"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Providing width throughout the attack, the Winger stretches the opposition defence by attacking from close to the sidelines. The role aims to provide support to their team's forwards, playing dangerous passes and crosses in the final third ",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      },
+      {
+        "role_name": "Inside Forward",
+        "key_attributes": [
+          "Dribbling",
+          "Off The Ball",
+          "Anticipation",
+          "First Touch",
+          "Technique",
+          "Acceleration",
+          "Agility",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Inside Forward is a wide role that aims to frequently drift inside into the half-spaces as their team attacks to help open up space for overlapping full-backs, as well as being in position to receive the ball in more central areas of th",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      },
+      {
+        "role_name": "Playmaking Winger",
+        "key_attributes": [
+          "Crossing",
+          "Dribbling",
+          "Off The Ball",
+          "Passing",
+          "Vision",
+          "Decisions",
+          "First Touch",
+          "Technique"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Playmaking Winger will act as the team's primary source of creativity, starting from a wide position during their team's build-up phase before later drifting inside to find space from which to play killer balls and create chances."
+      },
+      {
+        "role_name": "Wide Forward",
+        "key_attributes": [
+          "Dribbling",
+          "Off The Ball",
+          "Anticipation",
+          "First Touch",
+          "Technique",
+          "Acceleration",
+          "Pace",
+          "Agility"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "As with the Winger, the Wide Forward is expected to provide width throughout the attack so as to stretch the opposition defence and attack from near the sidelines."
+      },
+      {
+        "role_name": "Inside Winger",
+        "key_attributes": [
+          "Dribbling",
+          "First Touch",
+          "Technique",
+          "Teamwork",
+          "Acceleration",
+          "Agility",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Frequently aiming to drift inside into the half-spaces as their team attacks, the Inside Winger looks to receive the ball in more central areas of the pitch, while also creating space out wide for overlapping teammates. The role is usually ",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      }
+    ],
+    "AM (C)": [
+      {
+        "role_name": "Attacking Midfielder",
+        "key_attributes": [
+          "Long Shots",
+          "Off The Ball",
+          "Passing",
+          "First Touch",
+          "Technique",
+          "Flair",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "An offensive role which looks to operate between the opposition defensive and midfield line, the Attacking Midfielder looks to receive passes in pockets of space as much as possible."
+      },
+      {
+        "role_name": "Advanced Playmaker",
+        "key_attributes": [
+          "Off The Ball",
+          "Passing",
+          "Vision",
+          "Decisions",
+          "First Touch",
+          "Technique",
+          "Teamwork",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Advanced Playmaker is a creative role which looks to operate high up the pitch between the opposition's midfield and defence, looking to receive passes in pockets of space as much as possible."
+      },
+      {
+        "role_name": "Free Role",
+        "key_attributes": [
+          "Dribbling",
+          "Long Shots",
+          "Off The Ball",
+          "Passing",
+          "Vision",
+          "First Touch",
+          "Technique",
+          "Flair"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "A player with a Free Role is given full creative license, allowing them to roam from their position to create attacking opportunities for their team whilst also being encouraged to take more risks with the ball in an effort to both create a",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      },
+      {
+        "role_name": "Second Striker",
+        "key_attributes": [
+          "Finishing",
+          "Off The Ball",
+          "Anticipation",
+          "First Touch",
+          "Acceleration",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Second Striker operates as one of the team's main goalscoring threats."
+      },
+      {
+        "role_name": "Channel Midfielder",
+        "key_attributes": [
+          "Crossing",
+          "Off The Ball",
+          "Passing",
+          "First Touch",
+          "Technique",
+          "Work Rate",
+          "Acceleration",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Channel Midfielder looks to make supporting runs into wide areas, often linking up with their team's wide attackers."
+      }
+    ],
+    "AM (L)": [
+      {
+        "role_name": "Winger",
+        "key_attributes": [
+          "Crossing",
+          "Dribbling",
+          "Technique",
+          "Teamwork",
+          "Acceleration",
+          "Pace",
+          "Agility"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Providing width throughout the attack, the Winger stretches the opposition defence by attacking from close to the sidelines. The role aims to provide support to their team's forwards, playing dangerous passes and crosses in the final third ",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      },
+      {
+        "role_name": "Inside Forward",
+        "key_attributes": [
+          "Dribbling",
+          "Off The Ball",
+          "Anticipation",
+          "First Touch",
+          "Technique",
+          "Acceleration",
+          "Agility",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Inside Forward is a wide role that aims to frequently drift inside into the half-spaces as their team attacks to help open up space for overlapping full-backs, as well as being in position to receive the ball in more central areas of th",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      },
+      {
+        "role_name": "Playmaking Winger",
+        "key_attributes": [
+          "Crossing",
+          "Dribbling",
+          "Off The Ball",
+          "Passing",
+          "Vision",
+          "Decisions",
+          "First Touch",
+          "Technique"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Playmaking Winger will act as the team's primary source of creativity, starting from a wide position during their team's build-up phase before later drifting inside to find space from which to play killer balls and create chances."
+      },
+      {
+        "role_name": "Wide Forward",
+        "key_attributes": [
+          "Dribbling",
+          "Off The Ball",
+          "Anticipation",
+          "First Touch",
+          "Technique",
+          "Acceleration",
+          "Pace",
+          "Agility"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "As with the Winger, the Wide Forward is expected to provide width throughout the attack so as to stretch the opposition defence and attack from near the sidelines."
+      },
+      {
+        "role_name": "Inside Winger",
+        "key_attributes": [
+          "Dribbling",
+          "First Touch",
+          "Technique",
+          "Teamwork",
+          "Acceleration",
+          "Agility",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Frequently aiming to drift inside into the half-spaces as their team attacks, the Inside Winger looks to receive the ball in more central areas of the pitch, while also creating space out wide for overlapping teammates. The role is usually ",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      }
+    ],
+    "ST (C)": [
+      {
+        "role_name": "Deep-Lying Forward",
+        "key_attributes": [
+          "Finishing",
+          "Off The Ball",
+          "First Touch",
+          "Technique",
+          "Strength",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "With the main function of the Deep-Lying Forward being to link the attack to the midfield, they seek to drop between the lines to receive passes from deep before supplying linking passes of their own to teammates in a number of ways: moving",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      },
+      {
+        "role_name": "Center Forward",
+        "key_attributes": [
+          "Finishing",
+          "Heading",
+          "Off The Ball",
+          "First Touch",
+          "Technique",
+          "Acceleration",
+          "Strength",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Centre Forward, also typically known as the classic 'Number 9', is expected to lead the line and look to spearhead attacking moves."
+      },
+      {
+        "role_name": "Target Forward",
+        "key_attributes": [
+          "Finishing",
+          "Heading",
+          "Off The Ball",
+          "Strength",
+          "Jumping Reach",
+          "Balance",
+          "Bravery",
+          "Aggression"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "Heavily utilising their physicality and height to disrupt the opposition's defence and create goalscoring opportunities for their team, the Target Forward is typically the team's attacking outlet during the build-up phase, and are often the",
+        "description_note": "description truncated at 240 characters by bridge text-extraction cap (game's full text is longer; this is the verbatim text the bridge could read)"
+      },
+      {
+        "role_name": "Poacher",
+        "key_attributes": [
+          "Finishing",
+          "Heading",
+          "Off The Ball",
+          "Anticipation",
+          "Acceleration",
+          "Composure",
+          "Concentration"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "The Poacher sits on the shoulder of the last defender, looking to break the defensive line and run onto through balls from midfield."
+      },
+      {
+        "role_name": "Channel Forward",
+        "key_attributes": [
+          "Dribbling",
+          "Finishing",
+          "Off The Ball",
+          "First Touch",
+          "Technique",
+          "Work Rate",
+          "Acceleration",
+          "Composure"
+        ],
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "A high-energy role, the Channel Forward looks to constantly be a thorn in opposition defenders' sides, regularly making supporting runs into the channels for their team."
+      },
+      {
+        "role_name": "False Nine",
+        "key_attributes": "missing - role card exists below the visible scroll area of the role picker; bridge has no scroll verb to bring it into view",
+        "preferable_attributes": "missing - FM26's Player Role edit UI shows only a single 'Key Attributes' list; no separate preferable/secondary attribute tier is displayed",
+        "description": "missing - role card exists below the visible scroll area of the role picker; bridge has no scroll verb to bring it into view"
+      }
+    ]
+  }
+}

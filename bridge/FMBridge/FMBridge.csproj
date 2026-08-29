@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>FMBridge</AssemblyName>
+    <RootNamespace>FMBridge</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AssemblyVersion>0.5.0.0</AssemblyVersion>
+    <FileVersion>0.5.0.0</FileVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="src/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core"><HintPath>$(CoreDir)/BepInEx.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx.Unity.Common"><HintPath>$(CoreDir)/BepInEx.Unity.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP"><HintPath>$(CoreDir)/BepInEx.Unity.IL2CPP.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(CoreDir)/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(CoreDir)/Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppInterop.Common"><HintPath>$(CoreDir)/Il2CppInterop.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SI.Bindable"><HintPath>$(InteropDir)/SI.Bindable.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SI.Bindable.Reference.Core"><HintPath>$(InteropDir)/SI.Bindable.Reference.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SI.Core"><HintPath>$(InteropDir)/SI.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SI.Interop"><HintPath>$(InteropDir)/SI.Interop.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="FM.UI"><HintPath>$(InteropDir)/FM.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="FM.GamePlugin"><HintPath>$(InteropDir)/FM.GamePlugin.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(InteropDir)/Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(InteropDir)/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.Addressables"><HintPath>$(InteropDir)/Unity.Addressables.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UIElementsModule"><HintPath>$(InteropDir)/UnityEngine.UIElementsModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(InteropDir)/UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextCoreTextEngineModule"><HintPath>$(InteropDir)/UnityEngine.TextCoreTextEngineModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.ResourceManager"><HintPath>$(InteropDir)/Unity.ResourceManager.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SI.Addressables"><HintPath>$(InteropDir)/SI.Addressables.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SI.UI"><HintPath>$(InteropDir)/SI.UI.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>
