@@ -73,9 +73,13 @@ function connect() {
     log("bridge connected");
     try {
       await call({ method: "ui_inject", action: "overlay_add" });
-      log("overlay up");
+      // Arms the "Chat with DoF" row; the bridge attaches it whenever
+      // the Recruitment nav dropdown exists and re-attaches after
+      // screen changes, so once per connection is enough.
+      await call({ method: "ui_inject", action: "menu_add" });
+      log("overlay up, menu armed");
     } catch (e) {
-      log("overlay_add failed:", e.message);
+      log("ui setup failed:", e.message);
     }
   };
   ws.onmessage = (ev) => {
