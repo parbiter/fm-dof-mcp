@@ -14,6 +14,7 @@
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +24,13 @@ const BRIDGE_URL = "ws://127.0.0.1:7777/";
 const POLL_MS = 700;
 const CLAUDE_TIMEOUT_MS = 240_000;
 const BUBBLE_CAP = 3900; // bridge caps overlay_post text at 4000
+const LOCK_PORT = 7778; // singleton guard (localhost only, nothing served)
+
+// Set by the bridge plugin when it spawns this service alongside the game:
+// lifecycle is then game-managed, so once the bridge socket drops after a
+// successful connection the game is gone and this process exits with it
+// (a manually started service keeps retrying across game restarts instead).
+const MANAGED = process.env.DOF_CHAT_MANAGED === "1";
 
 // Chat-only layer on top of the canonical dof-persona.md (which the MCP
 // server also serves, roleplay-free): in-character voice + panel-sized
@@ -65,12 +73,14 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 // ---------------------------------------------------------------- bridge WS
 let ws = null;
 let nextId = 1;
+let everConnected = false;
 const pending = new Map(); // id -> {resolve, reject, timer}
 
 function connect() {
   ws = new WebSocket(BRIDGE_URL);
   ws.onopen = async () => {
     log("bridge connected");
+    everConnected = true;
     try {
       await call({ method: "ui_inject", action: "overlay_add" });
       // Arms the "Chat with DoF" row; the bridge attaches it whenever
@@ -95,6 +105,10 @@ function connect() {
     for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error("bridge closed")); }
     pending.clear();
     ws = null;
+    if (MANAGED && everConnected) {
+      log("bridge gone — exiting (game-managed lifecycle)");
+      process.exit(0);
+    }
     setTimeout(connect, 2000); // game restarting / not up yet — keep trying
   };
   ws.onerror = () => {}; // onclose follows and handles retry
@@ -234,6 +248,24 @@ async function poll() {
   setTimeout(poll, POLL_MS);
 }
 
-log("DoF chat service starting; repo:", REPO);
-connect();
-poll();
+// Singleton guard: two services polling the same panel would each steal
+// half the messages. Holding a localhost port is the lock — it releases
+// itself no matter how this process dies. Taken before touching the
+// bridge, so a bridge-spawned copy and a manual one can never both run.
+const lock = createServer();
+lock.once("error", (e) => {
+  if (e.code === "EADDRINUSE") {
+    log("another DoF chat service is already running — exiting");
+    process.exit(0);
+  }
+  log("lock port unavailable (" + e.code + ") — continuing without singleton guard");
+  start();
+});
+lock.once("listening", start);
+lock.listen(LOCK_PORT, "127.0.0.1");
+
+function start() {
+  log("DoF chat service starting; repo:", REPO, MANAGED ? "(game-managed)" : "");
+  connect();
+  poll();
+}

@@ -49,6 +49,7 @@ namespace FMBridge;
                 FMBridge.World.Navigator._log = Log;
                 _eyes = new EyesModule(Log, Config, _voice);
                 _eyes.Start();
+                ChatServiceLauncher.Start(Log);
             }
             catch (Exception e)
             {
@@ -64,6 +65,7 @@ namespace FMBridge;
                 _pump.Dispose();
                 _pump = null;
             }
+            ChatServiceLauncher.Stop();
             _voice?.Dispose();
             return base.Unload();
         }

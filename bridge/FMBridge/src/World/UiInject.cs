@@ -1557,6 +1557,32 @@ internal static class UiInject
         return bubble;
     }
 
+    private static bool _exclusiveInput;
+
+    /// <summary>Toggles the game's exclusive-input mode around chat-field
+    /// focus. FM26's keyboard shortcuts are Unity InputActions polled
+    /// independently of UI Toolkit focus, so while the chat input has
+    /// focus we ask the game's own input manager to suspend them — the
+    /// same mechanism the game's native text boxes use (its override
+    /// disables the shortcut action maps on begin, restores on end).
+    /// Reentrancy-guarded so a double focus-in can't unbalance End.</summary>
+    private static void SetExclusiveInput(bool on)
+    {
+        try
+        {
+            var mgr = SI.Input.InputManager.Instance;
+            if (mgr == null || on == _exclusiveInput) return;
+            _exclusiveInput = on;
+            if (on) mgr.OnExclusiveInputBegin();
+            else mgr.OnExclusiveInputEnd();
+            Navigator._log?.LogInfo($"[Bridge] chat input exclusive-input {(on ? "begin" : "end")} (game flag={mgr.IsExclusiveInputActive})");
+        }
+        catch (Exception e)
+        {
+            Navigator._log?.LogWarning($"[Bridge] exclusive-input toggle failed: {e.Message}");
+        }
+    }
+
     /// <summary>Builds the real input row: a single-line TextField plus a
     /// send button (same VisualElement+Label+hover pattern as the header
     /// close button — see BuildOverlayHeader). Submit (Enter or the button
@@ -1658,6 +1684,28 @@ internal static class UiInject
                         catch { }
                     })),
                 TrickleDown.TrickleDown);
+
+            // FM26 routes keyboard shortcuts through Unity InputActions
+            // (the game's input manager), not UI Toolkit key events, so a
+            // focused TextField alone doesn't stop the game reacting to
+            // every letter typed. The game's own edit boxes suppress this
+            // via the input manager's exclusive-input mode; mirror that:
+            // begin on focus-in, end on focus-out. Belt-and-braces, also
+            // swallow key events at the bubble phase so nothing above the
+            // field sees them (bubble runs after the field's internal text
+            // input has consumed the keystroke, so typing still works).
+            field.RegisterCallback<FocusInEvent>(
+                Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<EventCallback<FocusInEvent>>(
+                    (Action<FocusInEvent>)(_ => SetExclusiveInput(true))));
+            field.RegisterCallback<FocusOutEvent>(
+                Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<EventCallback<FocusOutEvent>>(
+                    (Action<FocusOutEvent>)(_ => SetExclusiveInput(false))));
+            field.RegisterCallback<KeyDownEvent>(
+                Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<EventCallback<KeyDownEvent>>(
+                    (Action<KeyDownEvent>)(evt => { try { evt.StopPropagation(); } catch { } })));
+            field.RegisterCallback<KeyUpEvent>(
+                Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<EventCallback<KeyUpEvent>>(
+                    (Action<KeyUpEvent>)(evt => { try { evt.StopPropagation(); } catch { } })));
         }
         catch (Exception e)
         {

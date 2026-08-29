@@ -39,6 +39,7 @@
     <Reference Include="Unity.ResourceManager"><HintPath>$(InteropDir)/Unity.ResourceManager.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="SI.Addressables"><HintPath>$(InteropDir)/SI.Addressables.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="SI.UI"><HintPath>$(InteropDir)/SI.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SI.Input"><HintPath>$(InteropDir)/SI.Input.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
 </Project>
