@@ -1,7 +1,7 @@
 {
   "name": "fm-dof-mcp",
   "version": "0.1.0",
-  "description": "MCP server exposing an advise-only FM26 Director of Football over the in-game bridge (fm-bridge).",
+  "description": "MCP tool surface for an advise-only FM26 Director of Football you chat with in-game — backs the chat panel and any external MCP client, over the in-game bridge (fm-bridge).",
   "type": "module",
   "private": true,
   "engines": {

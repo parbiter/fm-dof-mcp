@@ -1,7 +1,7 @@
 # Install
 
 This walks a stranger through running fm-dof-mcp end to end: BepInEx, the
-bridge plugin, the MCP server, and an MCP client. It assumes **macOS on
+bridge plugin, the MCP server, and the in-game chat. It assumes **macOS on
 Apple Silicon (M1/M2/M3/M4)** and a Steam copy of Football Manager 26 —
 nothing else is supported (see the platform note in the [README](../README.md)).
 
@@ -10,9 +10,11 @@ nothing else is supported (see the platform note in the [README](../README.md)).
 - FM26 installed via Steam.
 - [.NET SDK 6+](https://dotnet.microsoft.com/download) (for building the
   bridge plugin).
-- [Node.js 20+](https://nodejs.org/) (for building/running the MCP server).
-- An MCP client — [Claude Code](https://claude.com/claude-code) or
-  [Claude Desktop](https://claude.ai/download) both work.
+- [Node.js 20+](https://nodejs.org/) (for building/running the MCP server
+  and the chat service).
+- The [Claude Code](https://claude.com/claude-code) CLI, installed and
+  logged in — the chat answers via headless `claude -p` on that login; no
+  API key is configured anywhere.
 
 ## 1. Install BepInEx 6 (IL2CPP) for FM26 on macOS
 
@@ -67,7 +69,9 @@ export FM26_DIR="$HOME/Library/Application Support/Steam/steamapps/common/Footba
 you can omit the `export` if your install is there. `build_bridge.sh`
 compiles `bridge/FMBridge` against the BepInEx core/interop assemblies under
 `$FM26_DIR/BepInEx`; `deploy_bridge.sh` copies the resulting `FMBridge.dll`
-into `$FM26_DIR/BepInEx/plugins/FMBridge/`.
+into `$FM26_DIR/BepInEx/plugins/FMBridge/` and records where `node` and
+this repo live so the bridge can start the chat service with the game
+(step 4).
 
 Restart FM26 (via the arm64 launcher from step 1). Load into a career, then
 check `BepInEx/LogOutput.log` for a line like:
@@ -92,7 +96,37 @@ over the same local WebSocket, so FM26 needs to be running (with a career
 loaded) for tool calls to return real data — the server itself will start
 without it, but tool calls will fail until the bridge is reachable.
 
-## 4. Point an MCP client at it
+## 4. Open the in-game chat
+
+The chat service starts automatically with the game: `deploy_bridge.sh`
+(step 2) wrote a small `chat_service.env` next to the deployed plugin, and
+the bridge uses it to launch `scripts/dof_chat_service.mjs` when FM26
+starts — and stops it again when the game exits. The service answers via
+headless `claude -p` on your existing Claude Code login.
+
+Launch FM26 (via the arm64 launcher from step 1), load a career, then open
+**Recruitment → Chat with DoF** in the sidebar navigation. Type a question,
+and the reply arrives as a chat bubble — expect roughly 10–30 seconds for
+tool-heavy questions; the DoF is really reading your save. "New chat"
+starts a fresh conversation; conversation memory otherwise persists across
+questions and game sessions.
+
+The service's log lives next to the plugin:
+`$FM26_DIR/BepInEx/plugins/FMBridge/chat_service.log`. You can also run
+the service by hand from the repo root — `node scripts/dof_chat_service.mjs`
+— for example if autostart was disabled (no `node` on PATH at deploy time)
+or you want the log in your terminal; a localhost lock port guarantees only
+one instance ever serves the chat. If you move this repo, rerun
+`deploy_bridge.sh` so `chat_service.env` points at the right place.
+
+The panel lives only in the running game session — it is never written
+into your save.
+
+## Optional: point an external MCP client at it
+
+The same MCP server the chat runs on can be attached to any MCP client —
+Claude Code, Claude Desktop, or anything else that speaks MCP — for longer
+written analysis outside the game window.
 
 ### Claude Code
 
@@ -119,7 +153,7 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 
 Restart the client after editing the config.
 
-## 5. Use the `dof-persona` prompt
+### Use the `dof-persona` prompt
 
 The server exposes a `dof-persona` MCP prompt (`mcp/fm-dof-mcp/prompts/dof-persona.md`).
 Most MCP clients let you insert a server-provided prompt into the
@@ -128,7 +162,7 @@ server and prompt, e.g. `/fm-dof-mcp:dof-persona`). Load it at the start of
 a session so the model reasons only from what the tools return for your
 save, not from general football knowledge.
 
-## 6. First-run smoke test
+### First-run smoke test
 
 With FM26 running and a career loaded, ask your MCP client to call the
 `game_status` tool (or just ask "what's the game status?" once the
@@ -142,34 +176,6 @@ If that comes back, the whole chain — bridge plugin, WebSocket, MCP server,
 MCP client — is working. From there, try `my_club`, `squad_report`, or
 `query_players`.
 
-## 7. In-game chat overlay (optional)
-
-You can also chat with the DoF from inside the game (see the README's
-"In-game chat" section for what this looks like). It needs steps 2–3 done
-(bridge deployed, MCP server built) plus the
-[Claude Code](https://claude.com/claude-code) CLI installed and logged in —
-the chat service answers via headless `claude -p` on your existing login;
-no API key is configured anywhere.
-
-With FM26 running and a career loaded, start the service from the repo
-root:
-
-```bash
-node scripts/dof_chat_service.mjs
-```
-
-On connect it injects the chat panel into the game. Open it via
-**Recruitment → Chat with DoF** in the sidebar navigation, type a question,
-and the reply arrives as a chat bubble (expect roughly 10–30 seconds for
-tool-heavy questions — the DoF is really reading your save). "New chat"
-starts a fresh conversation; conversation memory otherwise persists across
-questions and service restarts.
-
-The service keeps retrying the WebSocket, so start order doesn't matter —
-it's fine to leave it running while the game restarts. Stop it with Ctrl-C;
-the panel disappears with the game session (it's never written into your
-save).
-
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
@@ -180,5 +186,5 @@ save).
 | BepInEx never loads at all (no `LogOutput.log`, instant crash, or game exits after ~30s at the main menu) | This is a BepInEx/macOS issue, not an fm-dof-mcp one — see the troubleshooting table in [DadMych/fm26-player-export-macos](https://github.com/DadMych/fm26-player-export-macos#troubleshooting). |
 | `build_bridge.sh` fails looking for BepInEx assemblies | Confirm `$FM26_DIR/BepInEx/core` and `$FM26_DIR/BepInEx/interop` exist — if not, step 1 didn't complete successfully. Note: always build via `./scripts/build_bridge.sh` — a bare `dotnet build` can't find the BepInEx assemblies (the script passes their paths to the compiler; `FM26_DIR` alone isn't enough). |
 | `game_status` returns but the date never matches your actual save | You're pointed at the wrong `FM26_DIR`, or a stale plugin copy is deployed — rerun `deploy_bridge.sh` after any rebuild. |
-| Chat panel never appears under Recruitment | The chat service isn't connected — its log should say `bridge connected` then `overlay up`. The menu row is injected when the Recruitment dropdown exists; navigate to a main squad screen once and reopen the dropdown. |
-| Chat replies with "couldn't reach my desk" | `claude` CLI missing from PATH, not logged in, or the MCP server isn't built (step 3) — run the service from the repo root and check its log for the claude exit message. |
+| Chat panel never appears under Recruitment | Check `chat_service.log` next to the deployed plugin — it should say `bridge connected` then `overlay up, menu armed`. If the log is missing, autostart didn't run: check `BepInEx/LogOutput.log` for `[Bridge] chat service` lines and rerun `deploy_bridge.sh`. The menu row is injected when the Recruitment dropdown exists; navigate to a main squad screen once and reopen the dropdown. |
+| Chat replies with "couldn't reach my desk" | `claude` CLI not on the PATH recorded at deploy time, not logged in, or the MCP server isn't built (step 3) — check `chat_service.log` for the claude exit message. |

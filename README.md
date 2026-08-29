@@ -1,24 +1,28 @@
 # fm-dof-mcp
 
-An advise-only **Director of Football** for Football Manager 26, exposed as
-an [MCP](https://modelcontextprotocol.io) server. Point an MCP client (Claude
-Code, Claude Desktop, or anything else that speaks MCP) at your running
-career and ask it football questions — squad depth, transfer targets, wage
-headroom — backed by live reads from the game itself, not guesses.
+An advise-only **Director of Football you chat with inside Football
+Manager 26**. A "Chat with DoF" entry appears in the game's Recruitment
+menu and opens a chat panel docked over your running career: ask it
+football questions — squad depth, transfer targets, wage headroom — and
+its answers are backed by live reads from the game itself, not guesses.
 
 It is three pieces:
 
-- **`bridge/`** — a [BepInEx 6](https://docs.bepinex.dev/) IL2CPP plugin that
-  runs inside FM26 and exposes a small, read-mostly set of operations over a
-  localhost WebSocket (game state, entity reads, squad/player queries, and
-  shortlist management — nothing that saves or advances the game). It can
-  also draw an optional in-game chat panel (see below).
-- **`mcp/fm-dof-mcp/`** — an MCP server (Node/TypeScript) that turns those
-  operations into 8 MCP tools plus a `dof-persona` prompt, and talks to the
-  bridge over that same WebSocket.
-- **`scripts/dof_chat_service.mjs`** — an optional host-side service that
-  wires the in-game chat panel to a headless Claude Code session with the
-  MCP tools attached, so you can talk to the DoF without leaving the game.
+- **`bridge/`** — a [BepInEx 6](https://docs.bepinex.dev/) IL2CPP plugin
+  that runs inside FM26. It draws the chat UI (menu entry, panel, bubbles)
+  and exposes a small, read-mostly set of operations over a localhost
+  WebSocket (game state, entity reads, squad/player queries, and shortlist
+  management — nothing that saves or advances the game).
+- **`mcp/fm-dof-mcp/`** — an [MCP](https://modelcontextprotocol.io) server
+  (Node/TypeScript) that turns those operations into 8 MCP tools plus a
+  `dof-persona` prompt. This is the DoF's entire tool surface — the chat
+  runs on it, and you can also point any external MCP client at it (see
+  below).
+- **`scripts/dof_chat_service.mjs`** — the host-side service that connects
+  the two: it polls the panel for what you typed, answers via a headless
+  Claude Code session with the MCP tools attached, and posts the reply
+  back as a chat bubble. The bridge launches it automatically with the
+  game once deployed.
 
 ## Demo
 
@@ -76,22 +80,28 @@ in-game date was identical before and after: nothing was saved or advanced.
 A captured demo video/GIF of a full session is coming — this section will be
 updated with it.
 
-## In-game chat (optional)
+## How the chat works
 
-Instead of (or alongside) an external MCP client, you can talk to the DoF
-from inside FM26 itself. The bridge can inject a **"Chat with DoF"** entry
-into the Recruitment navigation dropdown, which opens a chat panel docked
-over the game: type a question, get the DoF's answer as a chat bubble, with
-a thinking indicator while it works and a "New chat" button to start over.
+The in-game panel is deliberately dumb — it renders bubbles and collects
+typed text, with a thinking indicator while the DoF works and a "New chat"
+button to start over. `scripts/dof_chat_service.mjs` runs on the host,
+polls the panel over the same localhost WebSocket, answers via headless
+`claude -p` with the MCP tools attached (auth rides on your existing
+Claude Code login), and posts the reply back. Once `deploy_bridge.sh` has
+run, the bridge starts the service automatically with the game and stops
+it on exit — there is no manual step. The chat's tools are the MCP
+server's tools, nothing more — the advise-only surface below applies to
+everything the DoF can do. See
+[`docs/INSTALL.md`](docs/INSTALL.md#4-open-the-in-game-chat) for setup.
 
-The panel is deliberately dumb — it renders bubbles and collects typed text.
-`scripts/dof_chat_service.mjs` runs on the host, polls the panel over the
-same localhost WebSocket, answers via headless `claude -p` with the MCP
-tools attached (auth rides on your existing Claude Code login), and posts
-the reply back. The same advise-only surface applies: the chat's tools are
-the MCP server's tools, nothing more. See
-[`docs/INSTALL.md`](docs/INSTALL.md#7-in-game-chat-overlay-optional) for
-setup.
+## Using it from an external MCP client (optional)
+
+The same MCP server the chat runs on can be attached to any MCP client —
+Claude Code, Claude Desktop, or anything else that speaks MCP — for longer
+written analysis outside the game window. The demo transcript above is
+exactly that surface; see
+[`docs/INSTALL.md`](docs/INSTALL.md#optional-point-an-external-mcp-client-at-it)
+for client wiring.
 
 ## Design principles
 
@@ -132,7 +142,7 @@ This is experimental, single-platform software:
 
 See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walkthrough: BepInEx
 setup, building and deploying the bridge, building the MCP server, and
-wiring it into Claude Code or Claude Desktop.
+opening the in-game chat.
 
 ## License
 
