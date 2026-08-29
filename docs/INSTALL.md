@@ -12,9 +12,10 @@ nothing else is supported (see the platform note in the [README](../README.md)).
   bridge plugin).
 - [Node.js 20+](https://nodejs.org/) (for building/running the MCP server
   and the chat service).
-- The [Claude Code](https://claude.com/claude-code) CLI, installed and
-  logged in — the chat answers via headless `claude -p` on that login; no
-  API key is configured anywhere.
+- At least one supported agent CLI, installed and logged in:
+  [Codex](https://developers.openai.com/codex/cli) or
+  [Claude Code](https://claude.com/claude-code). The default is Codex; no API
+  key is configured anywhere by this project.
 
 ## 1. Install BepInEx 6 (IL2CPP) for FM26 on macOS
 
@@ -102,7 +103,22 @@ The chat service starts automatically with the game: `deploy_bridge.sh`
 (step 2) wrote a small `chat_service.env` next to the deployed plugin, and
 the bridge uses it to launch `scripts/dof_chat_service.mjs` when FM26
 starts — and stops it again when the game exits. The service answers via
-headless `claude -p` on your existing Claude Code login.
+the selected headless CLI on its existing login. Codex with `gpt-5.6-luna`
+is the default. To use Claude Code instead, deploy with:
+
+```bash
+DOF_CHAT_PROVIDER=claude ./scripts/deploy_bridge.sh
+```
+
+Use `DOF_CHAT_PROVIDER=codex` to select Codex explicitly. The two providers
+keep separate conversation session files, so switching between them cannot
+resume a thread through the wrong CLI.
+
+For a manual start, use the same environment variable:
+
+```bash
+DOF_CHAT_PROVIDER=claude node scripts/dof_chat_service.mjs
+```
 
 Launch FM26 (via the arm64 launcher from step 1), load a career, then open
 **Recruitment → Chat with DoF** in the sidebar navigation. Type a question,
@@ -119,11 +135,11 @@ or you want the log in your terminal; a localhost lock port guarantees only
 one instance ever serves the chat. If you move this repo, rerun
 `deploy_bridge.sh` so `chat_service.env` points at the right place.
 
-Replies stream into the bubble as the DoF writes them, with a short status
-line while he digs through tools. He thinks on the `sonnet` model by
-default; for snappier (if less considered) answers, deploy with
-`DOF_CHAT_MODEL=haiku bash scripts/deploy_bridge.sh` — or set the same
-variable before a manual start.
+The panel shows a short status line while the DoF digs through tools. Claude
+Code streams token-by-token; Codex replaces status/intermediate messages with
+the completed reply. Provider defaults are `gpt-5.6-luna` for Codex and
+`sonnet` for Claude. Set `DOF_CHAT_MODEL` before `scripts/deploy_bridge.sh`
+(or a manual start) to override the selected provider's model.
 
 The panel lives only in the running game session — it is never written
 into your save.
@@ -131,8 +147,16 @@ into your save.
 ## Optional: point an external MCP client at it
 
 The same MCP server the chat runs on can be attached to any MCP client —
-Claude Code, Claude Desktop, or anything else that speaks MCP — for longer
-written analysis outside the game window.
+Codex, Claude Code, Claude Desktop, or anything else that speaks MCP — for
+longer written analysis outside the game window.
+
+### Codex
+
+```bash
+codex mcp add fm-dof-mcp -- node "/absolute/path/to/fm-dof-mcp/mcp/fm-dof-mcp/dist/index.js"
+```
+
+Use the absolute path to wherever you cloned this repo.
 
 ### Claude Code
 
@@ -193,4 +217,4 @@ MCP client — is working. From there, try `my_club`, `squad_report`, or
 | `build_bridge.sh` fails looking for BepInEx assemblies | Confirm `$FM26_DIR/BepInEx/core` and `$FM26_DIR/BepInEx/interop` exist — if not, step 1 didn't complete successfully. Note: always build via `./scripts/build_bridge.sh` — a bare `dotnet build` can't find the BepInEx assemblies (the script passes their paths to the compiler; `FM26_DIR` alone isn't enough). |
 | `game_status` returns but the date never matches your actual save | You're pointed at the wrong `FM26_DIR`, or a stale plugin copy is deployed — rerun `deploy_bridge.sh` after any rebuild. |
 | Chat panel never appears under Recruitment | Check `chat_service.log` next to the deployed plugin — it should say `bridge connected` then `overlay up, menu armed`. If the log is missing, autostart didn't run: check `BepInEx/LogOutput.log` for `[Bridge] chat service` lines and rerun `deploy_bridge.sh`. The menu row is injected when the Recruitment dropdown exists; navigate to a main squad screen once and reopen the dropdown. |
-| Chat replies with "couldn't reach my desk" | `claude` CLI not on the PATH recorded at deploy time, not logged in, or the MCP server isn't built (step 3) — check `chat_service.log` for the claude exit message. |
+| Chat replies with "couldn't reach my desk" | The selected `codex` or `claude` CLI is not on the PATH recorded at deploy time, is not logged in, or the MCP server isn't built (step 3) — check `chat_service.log` for the provider exit message. |

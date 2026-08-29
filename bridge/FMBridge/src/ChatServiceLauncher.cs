@@ -8,7 +8,7 @@ namespace FMBridge;
 /// <summary>Starts the host-side DoF chat service (scripts/
 /// dof_chat_service.mjs) alongside the game, so the in-game chat works
 /// without the user starting anything by hand. The game's own process
-/// environment has no useful PATH (no node, no claude CLI), so
+/// environment has no useful PATH (no node or agent CLI), so
 /// deploy_bridge.sh records where they live in chat_service.env next to
 /// the plugin dll; if that file is missing the feature simply stays off
 /// and the service can still be run manually. The service itself refuses
@@ -30,7 +30,7 @@ internal static class ChatServiceLauncher
                 return;
             }
 
-            string node = null, script = null, path = null, model = null;
+            string node = null, script = null, path = null, provider = null, model = null;
             foreach (var line in File.ReadAllLines(envFile))
             {
                 var i = line.IndexOf('=');
@@ -40,6 +40,7 @@ internal static class ChatServiceLauncher
                 if (key == "NODE") node = val;
                 else if (key == "SCRIPT") script = val;
                 else if (key == "PATH") path = val;
+                else if (key == "PROVIDER") provider = val;
                 else if (key == "MODEL") model = val;
             }
             if (node == null || script == null || !File.Exists(node) || !File.Exists(script))
@@ -67,8 +68,9 @@ internal static class ChatServiceLauncher
             // bridge socket closes instead of retrying forever.
             psi.Environment["DOF_CHAT_MANAGED"] = "1";
             if (!string.IsNullOrEmpty(path)) psi.Environment["PATH"] = path;
-            // Model override recorded at deploy time — the game's env can't
-            // carry the user's shell DOF_CHAT_MODEL, so it travels via the file.
+            // Provider/model overrides recorded at deploy time — the game's
+            // environment cannot carry the user's shell values directly.
+            if (!string.IsNullOrEmpty(provider)) psi.Environment["DOF_CHAT_PROVIDER"] = provider;
             if (!string.IsNullOrEmpty(model)) psi.Environment["DOF_CHAT_MODEL"] = model;
 
             _proc = Process.Start(psi);

@@ -6,6 +6,7 @@ using BepInEx.Unity.IL2CPP;
 using FMBridge.Eyes;
 using FMBridge.Pump;
 using FMBridge.Voice;
+using HarmonyLib;
 
 namespace FMBridge;
 
@@ -19,6 +20,9 @@ namespace FMBridge;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private long _ticks;
         private double _nextBeat = -1.0;
+        private bool _safeTickRunning;
+        private Harmony _frameHarmony;
+        private static BridgePlugin _frameInstance;
         private const int BeatSeconds = 5;
 
         public override void Load()
@@ -29,7 +33,18 @@ namespace FMBridge;
                 : WinHarmonyTickPump.TryCreate(Log);
 
             Log.LogInfo($"[Bridge] loaded, pump={_pump.Name}");
-            _pump.Tick += OnTick;
+            // The compatibility-layer tick can arrive from inside an arbitrary
+            // IL2CPP runtime_invoke, including generateVisualContent itself.
+            // Prefix the outer repaint entry point instead: this is a stable
+            // main-thread frame boundary before RenderChain begins rendering.
+            _frameInstance = this;
+            _frameHarmony = new Harmony("dev.fmdofmcp.bridge.safe-frame");
+            var repaint = AccessTools.Method(
+                AccessTools.TypeByName("UnityEngine.UIElements.UIElementsRuntimeUtility"),
+                "RepaintPanels");
+            if (repaint == null) throw new MissingMethodException("UIElementsRuntimeUtility.RepaintPanels");
+            _frameHarmony.Patch(repaint,
+                prefix: new HarmonyMethod(typeof(BridgePlugin), nameof(BeforeRepaintPanels)));
 
             try
             {
@@ -59,9 +74,11 @@ namespace FMBridge;
 
         public override bool Unload()
         {
+            try { _frameHarmony?.UnpatchSelf(); } catch { }
+            _frameHarmony = null;
+            if (ReferenceEquals(_frameInstance, this)) _frameInstance = null;
             if (_pump != null)
             {
-                _pump.Tick -= OnTick;
                 _pump.Dispose();
                 _pump = null;
             }
@@ -70,8 +87,10 @@ namespace FMBridge;
             return base.Unload();
         }
 
-        private void OnTick()
+        private void RunSafeTick()
         {
+            if (_safeTickRunning) return;
+            _safeTickRunning = true;
             try
             {
                 _ticks++;
@@ -80,20 +99,24 @@ namespace FMBridge;
                 FMBridge.World.Navigator.Tick();
                 FMBridge.World.UiInject.Tick();
                 var now = _clock.Elapsed.TotalSeconds;
-                if (_nextBeat < 0)
+                if (_nextBeat < 0) _nextBeat = now + BeatSeconds;
+                else if (now >= _nextBeat)
                 {
                     _nextBeat = now + BeatSeconds;
-                    return;
+                    var uptime = TimeSpan.FromSeconds(now).ToString(@"hh\:mm\:ss");
+                    var init = SpikeHooks.Initialised > 0 ? "Y" : "n";
+                    Log.LogInfo($"[Bridge] alive uptime={uptime} ticks={_ticks} avg={_ticks / now:F0}/s init={init}");
                 }
-                if (now < _nextBeat) return;
-                _nextBeat = now + BeatSeconds;
-                var uptime = TimeSpan.FromSeconds(now).ToString(@"hh\:mm\:ss");
-                var init = SpikeHooks.Initialised > 0 ? "Y" : "n";
-                Log.LogInfo($"[Bridge] alive uptime={uptime} ticks={_ticks} avg={_ticks / now:F0}/s init={init}");
             }
             catch (Exception e)
             {
-                Log.LogError($"[Bridge] tick handler error: {e}");
+                Log.LogError($"[Bridge] scheduled tick handler error: {e}");
             }
+            finally { _safeTickRunning = false; }
+        }
+
+        private static void BeforeRepaintPanels()
+        {
+            try { _frameInstance?.RunSafeTick(); } catch { }
         }
     }

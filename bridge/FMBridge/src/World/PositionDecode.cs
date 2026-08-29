@@ -82,13 +82,73 @@ internal static class PositionDecode
     /// as-is, this is purely additive).</summary>
     public static string Decode(string raw)
     {
-        if (string.IsNullOrEmpty(raw)) return null;
+        return TryParseMask(raw, out var mask) ? Decode(mask) : null;
+    }
+
+    /// <summary>
+    /// Tests a requested FM position slot against the raw Position bitmask.
+    /// A player with D (LC) therefore matches D (C), and a player with
+    /// AM (RL), ST (C) matches ST (C); matching is slot-based, not equality
+    /// against the complete multi-position display string.
+    /// </summary>
+    public static bool MatchesSlot(string raw, string requestedLabel)
+    {
+        if (!TryParseMask(raw, out var mask)) return false;
+        var label = (requestedLabel ?? "").ToUpperInvariant().Replace(" ", "");
+        if (label == "GK") return (mask & Goalkeeper) != 0;
+
+        var open = label.IndexOf('(');
+        var groupLabel = open < 0 ? label : label.Substring(0, open);
+        var close = open < 0 ? -1 : label.IndexOf(')', open + 1);
+        if (open >= 0 && (close < 0 || close != label.Length - 1)) return false;
+        var group = FindGroup(groupLabel);
+        if (group == null) return false;
+
+        var hasGroup = (group.Right != 0 && (mask & group.Right) != 0)
+            || (group.Left != 0 && (mask & group.Left) != 0)
+            || (group.Centre != 0 && (mask & group.Centre) != 0);
+        if (!hasGroup) return false;
+        if (open < 0) return true;
+
+        var requestedSlots = label.Substring(open + 1, close - open - 1);
+        if (requestedSlots.Length == 0) return false;
+        foreach (var slot in requestedSlots)
+        {
+            if (slot == 'R' && HasSlot(mask, group, 'R')) return true;
+            if (slot == 'L' && HasSlot(mask, group, 'L')) return true;
+            if (slot == 'C' && HasSlot(mask, group, 'C')) return true;
+        }
+        return false;
+    }
+
+    private static Group FindGroup(string label)
+    {
+        foreach (var group in Groups) if (group.Label == label) return group;
+        return null;
+    }
+
+    private static bool HasSlot(uint mask, Group group, char slot)
+    {
+        var baseFlag = slot == 'R' ? group.Right : slot == 'L' ? group.Left : group.Centre;
+        if (baseFlag != 0 && (mask & baseFlag) != 0) return true;
+        // L/R modifiers turn a central slot into a half-space slot. This is
+        // especially important for D(C), DM, and other compact groups.
+        return group.Centre != 0 && (mask & group.Centre) != 0 &&
+            ((slot == 'R' && (mask & RightSidedPosition) != 0) ||
+             (slot == 'L' && (mask & LeftSidedPosition) != 0));
+    }
+
+    private static bool TryParseMask(string raw, out uint mask)
+    {
+        mask = 0;
+        if (string.IsNullOrWhiteSpace(raw)) return false;
         var sep = raw.IndexOf(':');
-        var payload = sep < 0 ? raw : raw.Substring(sep + 1);
+        var payload = (sep < 0 ? raw : raw.Substring(sep + 1)).Trim();
         if (!double.TryParse(payload.TrimEnd('f', 'm', 'd'), NumberStyles.Float,
-                CultureInfo.InvariantCulture, out var num)) return null;
-        if (num <= 0 || num > uint.MaxValue) return null;
-        return Decode((uint)num);
+                CultureInfo.InvariantCulture, out var num) || num <= 0 || num > uint.MaxValue)
+            return false;
+        mask = (uint)num;
+        return true;
     }
 
     public static string Decode(uint mask)

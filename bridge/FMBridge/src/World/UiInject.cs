@@ -143,6 +143,9 @@ internal static class UiInject
 
     private static VisualElement _overlayElement; // live reference to the attached overlay root, or null
     private static int _overlayCloseCount;
+    private static bool _overlayVisibleDesired;
+    private static long _overlayLastLayerCheckMs = -1;
+    private const long OverlayLayerCheckIntervalMs = 250;
 
     // === Real chat wiring: message area, outbox, bubble cap ===
     //
@@ -382,9 +385,12 @@ internal static class UiInject
         var pm = Navigator.Pm();
         var root = pm != null ? pm.RootVisualElement : null;
         if (root == null) return null;
+        _overlayVisibleDesired = true;
 
-        var existing = _overlayElement;
-        try { if (existing != null && existing.parent == null) existing = null; } catch { existing = null; }
+        // Resolve against the CURRENT PanelManager root. A cached element may
+        // still have a non-null parent while attached to a stale/replaced root.
+        var existing = FindByName(root, OverlayName, 0);
+        if (existing == null) existing = ReattachCachedOverlay(root);
 
         if (existing != null)
         {
@@ -429,6 +435,7 @@ internal static class UiInject
             var existing = root != null ? FindByName(root, OverlayName, 0) : _overlayElement;
             bool existed = existing != null;
             if (existed) existing.RemoveFromHierarchy();
+            _overlayVisibleDesired = false;
             _overlayElement = null;
             _overlayMessageArea = null;
             _overlaySystemLine = null;
@@ -535,9 +542,10 @@ internal static class UiInject
             var pm = Navigator.Pm();
             var root = pm != null ? pm.RootVisualElement : null;
             if (root == null) return new JsonObject { ["ok"] = false, ["reason"] = "no-root-visualelement" };
+            _overlayVisibleDesired = visible;
 
-            var existing = _overlayElement;
-            try { if (existing != null && existing.parent == null) existing = null; } catch { existing = null; }
+            var existing = FindByName(root, OverlayName, 0);
+            if (existing == null && visible) existing = ReattachCachedOverlay(root);
 
             if (existing == null)
             {
@@ -858,14 +866,15 @@ internal static class UiInject
         var root = pm != null ? pm.RootVisualElement : null;
         if (root == null) return;
 
-        var existing = _overlayElement;
-        try { if (existing != null && existing.parent == null) existing = null; } catch { existing = null; }
+        var existing = FindByName(root, OverlayName, 0);
+        if (existing == null) existing = ReattachCachedOverlay(root);
 
         if (existing == null)
         {
             var overlay = BuildOverlay();
             root.Add(overlay);
             _overlayElement = overlay;
+            _overlayVisibleDesired = true;
             Navigator._log?.LogInfo($"[Bridge] ToggleOverlay: {OverlayName} created (shown)");
             return;
         }
@@ -873,6 +882,7 @@ internal static class UiInject
         bool currentlyVisible;
         try { currentlyVisible = existing.style.display.value != DisplayStyle.None; } catch { currentlyVisible = true; }
         existing.style.display = currentlyVisible ? DisplayStyle.None : DisplayStyle.Flex;
+        _overlayVisibleDesired = !currentlyVisible;
         Navigator._log?.LogInfo($"[Bridge] ToggleOverlay: {OverlayName} display set to {(currentlyVisible ? "None" : "Flex")}");
     }
 
@@ -898,6 +908,7 @@ internal static class UiInject
     ///     most once per MenuRetryIntervalMs (1s), not every tick.</summary>
     public static void Tick()
     {
+        MaintainOverlayLayer();
         if (!_menuArmed) return;
 
         if (_menuElement != null)
@@ -921,6 +932,61 @@ internal static class UiInject
         if (_menuLastAttemptMs >= 0 && now - _menuLastAttemptMs < MenuRetryIntervalMs) return;
         _menuLastAttemptMs = now;
         TryInjectMenuItem();
+    }
+
+    /// <summary>
+    /// Panel opens append new full-screen children after our overlay. Keep a
+    /// visible chat attached to the current root and at the front; otherwise a
+    /// successful data/navigation call can make the chat appear to vanish even
+    /// though its cached VisualElement still has a parent on an obsolete root.
+    /// </summary>
+    private static void MaintainOverlayLayer()
+    {
+        if (!_overlayVisibleDesired) return;
+        var now = _clock.ElapsedMilliseconds;
+        if (_overlayLastLayerCheckMs >= 0 && now - _overlayLastLayerCheckMs < OverlayLayerCheckIntervalMs) return;
+        _overlayLastLayerCheckMs = now;
+        try
+        {
+            var pm = Navigator.Pm();
+            var root = pm != null ? pm.RootVisualElement : null;
+            if (root == null) return;
+            var live = FindByName(root, OverlayName, 0) ?? ReattachCachedOverlay(root);
+            if (live == null)
+            {
+                live = BuildOverlay();
+                root.Add(live);
+                Navigator._log?.LogWarning("[Bridge] overlay recovered on current PanelManager root");
+            }
+            live.style.display = DisplayStyle.Flex;
+            bool alreadyFront = false;
+            try
+            {
+                if (root.childCount > 0)
+                    alreadyFront = root[root.childCount - 1].Pointer == live.Pointer;
+            }
+            catch { }
+            if (!alreadyFront) live.BringToFront();
+            _overlayElement = live;
+        }
+        catch (Exception e)
+        {
+            Navigator._log?.LogWarning($"[Bridge] overlay layer maintenance failed: {e.Message}");
+        }
+    }
+
+    private static VisualElement ReattachCachedOverlay(VisualElement root)
+    {
+        var cached = _overlayElement;
+        if (cached == null || root == null) return null;
+        try { cached.RemoveFromHierarchy(); } catch { }
+        try
+        {
+            root.Add(cached);
+            Navigator._log?.LogInfo("[Bridge] overlay reattached to current PanelManager root");
+            return cached;
+        }
+        catch { return null; }
     }
 
     private static bool TryInjectMenuItem()
@@ -1982,6 +2048,7 @@ internal static class UiInject
     private static void OnOverlayCloseClicked()
     {
         _overlayCloseCount++;
+        _overlayVisibleDesired = false;
         Navigator._log?.LogInfo($"[Bridge] {OverlayName} close clicked (n={_overlayCloseCount})");
         try
         {

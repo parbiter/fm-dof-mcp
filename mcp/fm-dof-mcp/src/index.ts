@@ -107,8 +107,8 @@ const MANIFEST_ON_READ_NOTE =
   "'props' is the raw escape hatch: direct property reads outside the section vocabulary.";
 
 const UID_SCHEMA = z
-  .union([z.number().int(), z.array(z.number().int()).min(1)])
-  .describe("Entity uid: a single id number, or an array of ids for batch reads");
+  .union([z.number().int(), z.array(z.number().int()).min(1).max(20)])
+  .describe("Entity uid: a single id number, or an array of at most 20 ids for a bounded batch read");
 const SECTIONS_SCHEMA = z
   .array(z.string())
   .min(1)
@@ -232,19 +232,27 @@ server.registerTool(
     description:
       "One-call query against FM's full worldwide Player Database (~31k players): drives the " +
       "Recruitment > Player Database screen internally (from whatever screen the game is currently " +
-      "on) and returns a uid list off its results table, respecting 'max'. Filtering support is " +
+      "on) and returns a uid list off its results table, respecting 'max' as the candidate-window " +
+      "limit (not a promise to scan the entire database). Filtering support is " +
       "intentionally limited and NESTED under 'filters': the game's full condition-editor ('Edit " +
       "Search' > Add Condition, where contract-expiry and market-value RANGE filters would live) " +
       "opens but never renders a usable condition-type picker under UI-click simulation — likely a " +
-      "native dropdown overlay outside the reachable UI tree. Only 'filters.scouted_only' (boolean) " +
-      "is proven drivable; it is applied, read, and then reverted to its prior state before the call " +
+      "native dropdown overlay outside the reachable UI tree. 'age_min', 'age_max', and 'positions' " +
+      "are genuine post-table data filters: the bridge obtains age/position from the game in safe " +
+      "chunks, filters that candidate window before returning and before transfer-value scraping, " +
+      "and reports candidate-window truncation honestly in candidate_window (requested_max, available, " +
+      "scanned, matched, truncated). 'filters.scouted_only' is the only UI " +
+      "toggle; it is applied, read, and then reverted to its prior state before the call " +
       "returns (see 'reverted'/'revert_note' in the response). Optional 'enrich' reads a small " +
       "per-uid detail batch (age, position — plus an additive 'position_decoded' compact label — " +
-      "perceived potential ability, wage, contract end date, and transfer_value {display, sort} " +
+      "perceived potential ability, wage, contract end date, and transfer_value " +
+      "{display, sort, source:'player-database-ui', uid_verified} " +
       "where the game exposes a value) for the first 'enrich_max' returned uids using an overlapped " +
       "batch read — still noticeably slower than the base uid list, so keep 'enrich_max' small. " +
       "transfer_value gates honestly: a player marked 'Not for Sale' yields sort:null — do NOT " +
-      "treat null as zero, it means no market value is being quoted, not 'worth nothing'. Enrich is " +
+      "treat null as zero, it means no market value is being quoted, not 'worth nothing'. A value is " +
+      "safe to attribute only when uid_verified matches that enriched row's uid; ambiguous UI row " +
+      "alignment is omitted as missing instead of guessed. Enrich is " +
       "capped at 50 and a truncated enrich is never silent: the response always includes " +
       "'enrich_requested' (what you asked for, pre-cap), 'enrich_done' (how many actually came " +
       "back), 'enrich_truncated' (bool), and 'enrich_cap' (the hard ceiling, currently 50) — silent " +
@@ -263,9 +271,12 @@ server.registerTool(
             .boolean()
             .optional()
             .describe("Restrict to scouted players only (the only proven-drivable filter toggle)."),
+          age_min: z.number().int().min(0).max(120).optional().describe("Inclusive minimum age, applied to game-returned player data."),
+          age_max: z.number().int().min(0).max(120).optional().describe("Inclusive maximum age, applied to game-returned player data."),
+          positions: z.array(z.string().min(1)).min(1).max(20).optional().describe("Accepted FM position labels, e.g. ['D (R)', 'D (C)']; matched against the decoded position label."),
         })
         .optional()
-        .describe("Filters to apply before reading the uid list; currently only 'scouted_only'."),
+        .describe("Filters applied after game data is available; scouted_only is the UI toggle, age/position are post-table data filters."),
       enrich: z
         .boolean()
         .optional()

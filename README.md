@@ -20,9 +20,9 @@ It is three pieces:
   below).
 - **`scripts/dof_chat_service.mjs`** — the host-side service that connects
   the two: it polls the panel for what you typed, answers via a headless
-  Claude Code session with the MCP tools attached, and posts the reply
-  back as a chat bubble. The bridge launches it automatically with the
-  game once deployed.
+  Codex or Claude Code session with the MCP tools attached, and posts the
+  reply back as a chat bubble. Codex with GPT-5.6 Luna is the default; the
+  bridge launches the selected provider automatically once deployed.
 
 ## Demo
 
@@ -86,19 +86,20 @@ The in-game panel is deliberately dumb — it renders bubbles and collects
 typed text, with a thinking indicator while the DoF works and a "New chat"
 button to start over. `scripts/dof_chat_service.mjs` runs on the host,
 polls the panel over the same localhost WebSocket, answers via headless
-`claude -p` with the MCP tools attached (auth rides on your existing
-Claude Code login), and posts the reply back. Once `deploy_bridge.sh` has
-run, the bridge starts the service automatically with the game and stops
-it on exit — there is no manual step. The chat's tools are the MCP
-server's tools, nothing more — the advise-only surface below applies to
+Codex or Claude Code with the MCP tools attached (auth rides on the selected
+CLI's existing login), and posts the reply back. Choose with
+`DOF_CHAT_PROVIDER=codex|claude`; Codex is the default. Once
+`deploy_bridge.sh` has run, the bridge starts the service automatically with
+the game and stops it on exit — there is no manual step. The chat's tools are
+the MCP server's tools, nothing more — the advise-only surface below applies to
 everything the DoF can do. See
 [`docs/INSTALL.md`](docs/INSTALL.md#4-open-the-in-game-chat) for setup.
 
 ## Using it from an external MCP client (optional)
 
 The same MCP server the chat runs on can be attached to any MCP client —
-Claude Code, Claude Desktop, or anything else that speaks MCP — for longer
-written analysis outside the game window. The demo transcript above is
+Codex, Claude Code, Claude Desktop, or anything else that speaks MCP — for
+longer written analysis outside the game window. The demo transcript above is
 exactly that surface; see
 [`docs/INSTALL.md`](docs/INSTALL.md#optional-point-an-external-mcp-client-at-it)
 for client wiring.

@@ -75,6 +75,8 @@ internal static partial class Navigator
     internal static BepInEx.Logging.ManualLogSource _log;
     private static bool _lastOk;
     private static string _lastVia = "";
+    private static int _recoveryDelayTicks;
+    private static bool _recoveryAttempted;
 
     public static void Init(Action<JsonObject> broadcast) => _broadcast = broadcast;
 
@@ -265,6 +267,16 @@ internal static partial class Navigator
 
     public static void Tick()
     {
+        if (_recoveryDelayTicks > 0)
+        {
+            _recoveryDelayTicks--;
+            if (_recoveryDelayTicks == 0 && _pendingName == null && _verifyPid == null && !_recoveryAttempted)
+            {
+                _recoveryAttempted = true;
+                _log?.LogWarning("[Nav] recovering from a failed panel mutation via PortalScreen");
+                NavOpen("PortalScreen");
+            }
+        }
         if (_verifyPid != null) { VerifyTick(); return; }
         if (_pending == null || _pendingName == null) return;
         var name = _pendingName;
@@ -312,6 +324,22 @@ internal static partial class Navigator
                             via = "show";
                         }
                         catch (Exception e2) { via = "show-err:" + e2.Message; }
+                    }
+                    // A UI mutation exception is not a soft miss. PanelManager
+                    // can have changed part of the tree before throwing, so an
+                    // IsOpen=true reading afterward does not prove a usable
+                    // screen. Fail immediately, never issue another Open against
+                    // the half-mutated panel, and recover through PortalScreen.
+                    if (via.Contains("-err:", StringComparison.Ordinal))
+                    {
+                        _pending = null;
+                        _pendingName = null;
+                        _pendingParamName = null;
+                        _pendingParamValue = null;
+                        _pendingArgs = null;
+                        RequestRecovery();
+                        Emit(false, name, via + "|mutation-aborted");
+                        return;
                     }
                     // transition is async: verify over several ticks instead of immediately
                     _verifyPid = pid;
@@ -396,7 +424,11 @@ internal static partial class Navigator
                     _log?.LogInfo("[Nav] fallback Open(pid,cb,'') issued");
                 }
             }
-            catch (Exception e2) { _verifyVia += "+open-err:" + e2.Message; }
+            catch (Exception e2)
+            {
+                AbortVerifyAfterMutation("open", e2);
+                return;
+            }
         }
         if (!open && _verifyTicks == 16 && !hasParam && !hasArgs)
         {
@@ -406,7 +438,11 @@ internal static partial class Navigator
                 _verifyVia += "+open(null-param)";
                 _log?.LogInfo("[Nav] fallback Open(pid,null,param,cb,'') issued");
             }
-            catch (Exception e2) { _verifyVia += "+openp-err:" + e2.Message; }
+            catch (Exception e2)
+            {
+                AbortVerifyAfterMutation("open-null-param", e2);
+                return;
+            }
         }
         try { open = pm.IsOpen(_verifyPid); } catch { }
         int regNow = 0;
@@ -420,6 +456,25 @@ internal static partial class Navigator
             _verifyParamValue = null;
             _verifyArgs = null;
         }
+    }
+
+    private static void AbortVerifyAfterMutation(string operation, Exception error)
+    {
+        var name = _verifyName;
+        var via = _verifyVia + "+" + operation + "-err:" + error.Message + "|mutation-aborted";
+        _log?.LogWarning($"[Nav] mutation aborted panel={name} operation={operation}: {error.Message}");
+        _verifyPid = null;
+        _verifyParamName = null;
+        _verifyParamValue = null;
+        _verifyArgs = null;
+        RequestRecovery();
+        Emit(false, name, via);
+    }
+
+    private static void RequestRecovery()
+    {
+        _recoveryDelayTicks = 3;
+        _recoveryAttempted = false;
     }
 
     public static JsonObject CloseTop()

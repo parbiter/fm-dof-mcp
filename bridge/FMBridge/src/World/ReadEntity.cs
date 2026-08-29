@@ -29,7 +29,10 @@ namespace FMBridge.World;
 /// </summary>
 internal static class ReadEntity
 {
-    private const int MaxUids = 50;
+    // A batch read is deliberately bounded at the bridge boundary as well as
+    // in the MCP schema. This prevents another MCP client (or a raw WS caller)
+    // from turning one request into hundreds of sequential player reads.
+    private const int MaxUids = 20;
     private const int MaxProps = 128;
     private const int PollIntervalMs = 150;
     private const int PerUidWaitMs = 2500;
@@ -251,7 +254,7 @@ internal static class ReadEntity
                             transferValueScrapesAttempted++;
                             string tvText = null;
                             try { tvText = await QueryPlayers.ReadTransferValueForUid(queue, uid); } catch { }
-                            ApplyTransferValueScrape(entry, tvText);
+                            ApplyTransferValueScrape(entry, uid, tvText);
                         }
                         else if (entry["missing"] is JsonArray missingCap)
                         {
@@ -363,7 +366,7 @@ internal static class ReadEntity
     /// successful scrape here means the uid's identity + the one requested
     /// field both resolved, so found/error are corrected to reflect that.
     /// </summary>
-    private static void ApplyTransferValueScrape(JsonObject entry, string text)
+    private static void ApplyTransferValueScrape(JsonObject entry, int uid, string text)
     {
         if (entry?["missing"] is JsonArray missing)
         {
@@ -376,7 +379,10 @@ internal static class ReadEntity
         }
         if (!string.IsNullOrEmpty(text) && entry?["data"] is JsonObject data)
         {
-            data["TransferValue"] = QueryPlayers.ParseTransferValue(text);
+            var value = QueryPlayers.ParseTransferValue(text);
+            value["source"] = "player-database-ui";
+            value["uid_verified"] = uid;
+            data["TransferValue"] = value;
             entry["found"] = true;
             entry.Remove("error");
         }

@@ -19,6 +19,10 @@ internal sealed class VoiceServer : IDisposable
     private readonly ManualLogSource _log;
     private readonly ConcurrentDictionary<int, Conn> _clients = new ConcurrentDictionary<int, Conn>();
     private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+    // All operations that can navigate, inspect, or mutate the game's UI use
+    // one global gate. Conn's send lock only protects one WebSocket; it cannot
+    // stop two different clients from driving the same Unity screen at once.
+    private readonly SemaphoreSlim _uiOperationGate = new SemaphoreSlim(1, 1);
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly int _port;
     private readonly bool _allowCommands;
@@ -164,6 +168,12 @@ internal sealed class VoiceServer : IDisposable
             await ReplyError(conn, id, $"bad json: {e.Message}");
             return;
         }
+        var needsUiGate = method != "ping" && method != "game_status";
+        if (needsUiGate)
+        {
+            try { await _uiOperationGate.WaitAsync(_cts.Token); }
+            catch (OperationCanceledException) { return; }
+        }
         try
         {
             switch (method)
@@ -239,6 +249,10 @@ internal sealed class VoiceServer : IDisposable
         catch (Exception e)
         {
             await ReplyError(conn, id, $"{method} failed: {e.Message}");
+        }
+        finally
+        {
+            if (needsUiGate) _uiOperationGate.Release();
         }
     }
 

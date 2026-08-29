@@ -18,14 +18,16 @@ namespace FMBridge.World;
 /// tab-click -> (optional toggle) -> list-read sequence proved fully
 /// deterministic and cheap (all steps &lt;1s except the initial screen load),
 /// so there was no brittleness forcing a fallback to a caller-driven recipe
-/// of smaller verbs. The one filter this verb can actually drive
+/// of smaller verbs. The UI filter this verb can actually drive
 /// ("scouted_only") is exposed as a plain boolean flag rather than a
 /// free-form filter DSL, because live probing found the game's
 /// own full condition-editor ("Edit Search" -> Add Condition) unreachable
 /// via UI-Toolkit-tree click simulation (it is a native
 /// dropdown/overlay, not part of the VisualElement tree the UiFind2/UiClick
-/// walk covers). Contract-expiry and market-value RANGE filtering are
-/// therefore NOT supported by this verb; per-row transfer-value text
+/// walk covers). Age and position are instead post-table filters over the
+/// bounded candidate window, using small game-data binding batches. Contract-
+/// expiry and market-value RANGE filtering are therefore NOT supported by
+/// this verb; per-row transfer-value text
 /// (already a visible table column) can still be read via `enrich`.
 ///
 /// Reach-reliability: every call re-drives navigation from scratch
@@ -64,6 +66,10 @@ internal static class QueryPlayers
     // reports enrich_requested/enrich_done/enrich_truncated/enrich_cap so a
     // silent cut is never possible again even if this constant changes again.
     private const int HardEnrichMax = 50;
+    // Filtering uses the same upper bound as the proven-safe enrichment
+    // plant. Chunks are fully collected (and their bindings closed) before
+    // the next chunk starts; max never becomes one giant binding batch.
+    private const int FilterBatchSize = HardEnrichMax;
 
     // Toggle-click retry tuning (repeat-call bug fix -- see the
     // ClickToggleWithRetry doc comment for the root cause).
@@ -102,6 +108,7 @@ internal static class QueryPlayers
     // position fit, PA, wage, contract end), not the full 14-way Ability*
     // positional-fit family.
     private static readonly string[] Phase1Props = { "Name", "Age", "Position", "PerceivedPotentialAbility", "FullContract" };
+    private static readonly string[] FilterProps = { "Age", "Position" };
     private static readonly string[] Phase2Props = { "Wage", "EndDate" };
 
     // ---------------------------------------------------- transfer_value
@@ -148,15 +155,19 @@ internal static class QueryPlayers
     /// surfaces as a per-player "missing" entry rather than fabricating a
     /// value.
     /// </summary>
-    private static async Task<Dictionary<int, string>> ReadTransferValueTexts(FMBridge.Voice.MainThreadQueue queue, int count)
+    private static async Task<Dictionary<int, string>> ReadTransferValueTexts(
+        FMBridge.Voice.MainThreadQueue queue, List<int> uids, Dictionary<int, int> globalIndexByUid)
     {
         var result = new Dictionary<int, string>();
-        if (count <= 0) return result;
+        if (uids == null || uids.Count == 0 || globalIndexByUid == null) return result;
 
-        int covered = 0;
-        for (int chunk = 0; chunk < TransferValueMaxChunks && covered < count; chunk++)
+        var unresolved = new HashSet<int>(uids);
+        int chunks = 0;
+        foreach (var uid in uids)
         {
-            await OnQueue(queue, _ => Navigator.ScrollToIndex("playertable", covered));
+            if (!unresolved.Contains(uid) || chunks++ >= TransferValueMaxChunks) continue;
+            if (!globalIndexByUid.TryGetValue(uid, out var targetIndex)) continue;
+            await OnQueue(queue, _ => Navigator.ScrollToIndex("playertable", targetIndex));
 
             int winStart = -1, winCount = -1;
             var deadline = Environment.TickCount64 + TransferValueWindowSettleMs;
@@ -166,32 +177,64 @@ internal static class QueryPlayers
                 var win = probe?["visibleWindow"] as JsonObject;
                 winStart = AsInt(win?["start"]);
                 winCount = AsInt(win?["count"]);
-                if (winStart >= 0 && winCount > 0 && covered >= winStart && covered < winStart + winCount) break;
+                if (winStart >= 0 && winCount > 0 && targetIndex >= winStart && targetIndex < winStart + winCount) break;
                 await Task.Delay(PollIntervalMs);
             }
-            if (winStart < 0 || winCount <= 0) break; // never settled -- stop, leave the rest unread
+            if (winStart < 0 || winCount <= 0) continue;
 
             var rect = await ResolveTableRect(queue, "playertable");
-            if (rect == null) break;
+            if (rect == null) continue;
 
             var cellsR = await OnQueue(queue, _ => Navigator.UiFind2(
                 TransferValueCellName, 200, rect.Value.x, rect.Value.y, rect.Value.x + rect.Value.w, rect.Value.y + rect.Value.h, true));
-            if (cellsR?["ok"]?.GetValue<bool>() == true && cellsR["rows"] is JsonArray cellRows)
+            var after = await OnQueue(queue, _ => Navigator.GetVisibleWindow("playertable"));
+            int afterStart = AsInt(after?["visibleWindow"]?["start"]);
+            int afterCount = AsInt(after?["visibleWindow"]?["count"]);
+            if (afterStart != winStart || afterCount != winCount) continue; // window moved while scraping
+
+            if (cellsR?["ok"]?.GetValue<bool>() == true && cellsR["rows"] is JsonArray cellRows
+                && TryMapTransferValueWindow(cellRows, winStart, winCount, out var windowValues))
             {
-                for (int i = 0; i < cellRows.Count; i++)
+                foreach (var pendingUid in new List<int>(unresolved))
                 {
-                    int globalIdx = winStart + i;
-                    if (globalIdx < 0 || globalIdx >= count) continue;
-                    var text = (string)(cellRows[i] as JsonObject)?["text"];
-                    if (!string.IsNullOrEmpty(text)) result.TryAdd(globalIdx, text);
+                    if (!globalIndexByUid.TryGetValue(pendingUid, out var idx)) continue;
+                    if (!windowValues.TryGetValue(idx, out var text)) continue;
+                    result[pendingUid] = text;
+                    unresolved.Remove(pendingUid);
                 }
             }
-
-            int next = winStart + winCount;
-            if (next <= covered) break; // safety: window didn't advance, avoid an infinite loop
-            covered = next;
         }
         return result;
+    }
+
+    /// <summary>Fail-closed row alignment for UI-only transfer values. UiFind2
+    /// returns DFS order, which is not row order; pairing that array directly
+    /// with VisibleView caused values to migrate between players. Sort by row
+    /// geometry and accept the window only when it is a complete, one-cell-per-
+    /// visible-row set. Any ambiguity produces no values for the window.</summary>
+    private static bool TryMapTransferValueWindow(JsonArray cells, int winStart, int winCount,
+        out Dictionary<int, string> values)
+    {
+        values = new Dictionary<int, string>();
+        if (cells == null || winStart < 0 || winCount <= 0) return false;
+        var ordered = new List<(double y, string text)>();
+        foreach (var node in cells)
+        {
+            var row = node as JsonObject;
+            var text = (string)row?["text"];
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            int y = AsInt(row?["y"]), h = AsInt(row?["h"]);
+            if (h <= 0) return false;
+            ordered.Add((y + h / 2.0, text));
+        }
+        if (ordered.Count != winCount) return false;
+        ordered.Sort((a, b) => a.y.CompareTo(b.y));
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            if (i > 0 && ordered[i].y - ordered[i - 1].y < 4.0) return false;
+            values[winStart + i] = ordered[i].text;
+        }
+        return true;
     }
 
     /// <summary>
@@ -279,10 +322,11 @@ internal static class QueryPlayers
             var cellsR = await OnQueue(queue, _ => Navigator.UiFind2(
                 TransferValueCellName, 200, rect.Value.x, rect.Value.y, rect.Value.x + rect.Value.w, rect.Value.y + rect.Value.h, true));
             if (cellsR?["ok"]?.GetValue<bool>() != true || cellsR["rows"] is not JsonArray cellRows) return null;
-
-            int offset = globalIndex - winStart;
-            if (offset < 0 || offset >= cellRows.Count) return null;
-            return (string)(cellRows[offset] as JsonObject)?["text"];
+            var after = await OnQueue(queue, _ => Navigator.GetVisibleWindow("playertable"));
+            if (AsInt(after?["visibleWindow"]?["start"]) != winStart
+                || AsInt(after?["visibleWindow"]?["count"]) != winCount) return null;
+            if (!TryMapTransferValueWindow(cellRows, winStart, winCount, out var mapped)) return null;
+            return mapped.TryGetValue(globalIndex, out var text) ? text : null;
         }
         catch { return null; }
     }
@@ -372,6 +416,12 @@ internal static class QueryPlayers
             int enrichMax = Math.Clamp(enrichMaxRequested <= 0 ? DefaultEnrichMax : enrichMaxRequested, 1, HardEnrichMax);
 
             bool scoutedOnly = request?["filters"]?["scouted_only"] is JsonValue sv && sv.TryGetValue<bool>(out var sb) && sb;
+            int? ageMin = ReadOptionalInt(request?["filters"]?["age_min"]);
+            int? ageMax = ReadOptionalInt(request?["filters"]?["age_max"]);
+            var positions = ReadStringArray(request?["filters"]?["positions"]);
+            if (ageMin.HasValue && ageMax.HasValue && ageMin.Value > ageMax.Value)
+                return Fail("filters.age_min cannot be greater than filters.age_max", sw, null);
+            bool hasDataFilters = ageMin.HasValue || ageMax.HasValue || positions.Count > 0;
 
             // ---------------------------------------------- 1. reach the screen
             // (ReachPlayerDatabase's own final poll already waits for a
@@ -434,7 +484,11 @@ internal static class QueryPlayers
             // silently filtered from the previous call's abandoned toggle).
             string listError = null;
             var uids = new List<int>();
+            var globalIndexByUid = new Dictionary<int, int>();
             JsonArray enriched = null;
+            int candidateWindowTotal = -1;
+            int filterCandidatesScanned = 0;
+            int filterCandidatesMatched = 0;
             {
                 JsonObject listResult = null;
                 var listDeadline = Environment.TickCount64 + UidListRetryDeadlineMs;
@@ -451,13 +505,45 @@ internal static class QueryPlayers
                 }
                 else
                 {
+                    candidateWindowTotal = AsInt(listResult["count"]);
                     if (listResult["rows"] is JsonArray rowsArr)
                     {
                         foreach (var r in rowsArr)
                         {
                             var ro = r as JsonObject;
-                            if (ro?["uid"] != null && (string)ro["refType"] == "Person") uids.Add((int)ro["uid"]);
+                            if (ro?["uid"] != null && (string)ro["refType"] == "Person")
+                            {
+                                int uid = (int)ro["uid"];
+                                uids.Add(uid);
+                                if (ro["index"] != null) globalIndexByUid[uid] = AsInt(ro["index"]);
+                            }
                         }
+                    }
+                    if (hasDataFilters && uids.Count > 0)
+                    {
+                        // These two fields are the minimum game data needed
+                        // to filter. Process bounded chunks so max=2000 can
+                        // never plant 2000 bindings at once. BatchEnrich's
+                        // collect closes every chunk's bindings before this
+                        // loop starts the next one.
+                        var candidateUids = uids;
+                        var kept = new List<int>(candidateUids.Count);
+                        for (var offset = 0; offset < candidateUids.Count; offset += FilterBatchSize)
+                        {
+                            var chunk = candidateUids.GetRange(offset, Math.Min(FilterBatchSize, candidateUids.Count - offset));
+                            var filterRows = await BatchEnrich(queue, chunk, null, true);
+                            filterCandidatesScanned += chunk.Count;
+                            for (var i = 0; i < filterRows.Count && i < chunk.Count; i++)
+                            {
+                                var row = filterRows[i] as JsonObject;
+                                if (MatchesDataFilters(row, ageMin, ageMax, positions))
+                                {
+                                    kept.Add(chunk[i]);
+                                    filterCandidatesMatched++;
+                                }
+                            }
+                        }
+                        uids = kept;
                     }
                     if (enrich && uids.Count > 0)
                     {
@@ -469,7 +555,7 @@ internal static class QueryPlayers
                         // fabricated PersonReferences, not the visible
                         // window), so ordering here is latency-only, not a
                         // correctness dependency.
-                        var transferValueTexts = await ReadTransferValueTexts(queue, enrichUids.Count);
+                        var transferValueTexts = await ReadTransferValueTexts(queue, enrichUids, globalIndexByUid);
                         enriched = await BatchEnrich(queue, enrichUids, transferValueTexts);
                     }
                 }
@@ -568,8 +654,26 @@ internal static class QueryPlayers
                 ["ok"] = true,
                 ["reach"] = reachSteps,
                 ["total_unfiltered"] = baselineCount,
-                ["total_after_filter"] = filteredCount.HasValue ? (JsonNode)JsonValue.Create(filteredCount.Value) : null,
-                ["filters_applied"] = new JsonObject { ["scouted_only"] = scoutedOnly, ["note"] = filterNote },
+                ["total_after_filter"] = IsCandidateWindowTruncated(candidateWindowTotal, hasDataFilters ? filterCandidatesScanned : uids.Count)
+                    ? null : (JsonNode)JsonValue.Create(uids.Count),
+                ["returned_after_filter"] = uids.Count,
+                ["candidate_window"] = new JsonObject {
+                    ["requested_max"] = max,
+                    ["available"] = candidateWindowTotal >= 0 ? (JsonNode)JsonValue.Create(candidateWindowTotal) : null,
+                    ["scanned"] = hasDataFilters ? filterCandidatesScanned : uids.Count,
+                    ["matched"] = hasDataFilters ? filterCandidatesMatched : uids.Count,
+                    ["truncated"] = IsCandidateWindowTruncated(candidateWindowTotal, hasDataFilters ? filterCandidatesScanned : uids.Count),
+                    ["filter_batch_size"] = hasDataFilters ? FilterBatchSize : null
+                },
+                ["filters_applied"] = new JsonObject {
+                    ["scouted_only"] = scoutedOnly,
+                    ["age_min"] = ageMin,
+                    ["age_max"] = ageMax,
+                    ["positions"] = positions.Count > 0 ? ToJsonArray(positions) : null,
+                    ["data_filter_candidates_scanned"] = filterCandidatesScanned,
+                    ["data_filter_candidates_matched"] = filterCandidatesMatched,
+                    ["note"] = filterNote
+                },
                 ["uid_count"] = uids.Count,
                 ["uids"] = ToJsonArray(uids),
                 ["enriched"] = enriched,
@@ -966,20 +1070,31 @@ internal static class QueryPlayers
 
     private static int _counter;
 
-    private static async Task<JsonArray> BatchEnrich(FMBridge.Voice.MainThreadQueue queue, List<int> uids, Dictionary<int, string> transferValueTexts = null)
+    private static async Task<JsonArray> BatchEnrich(FMBridge.Voice.MainThreadQueue queue, List<int> uids, Dictionary<int, string> transferValueTexts = null, bool filterOnly = false)
     {
-        var plants = await OnQueue(queue, b => PlantPlayers(b, uids));
-        var deadline = Environment.TickCount64 + EnrichPhaseWaitMs * 2;
-        while (Environment.TickCount64 < deadline)
+        var plants = await OnQueue(queue, b => PlantPlayers(b, uids, filterOnly ? FilterProps : Phase1Props));
+        JsonArray result = null;
+        try
         {
-            var pending = await OnQueue(queue, b => AdvancePlayers(b, plants));
-            if (pending == 0) break;
-            await Task.Delay(PollIntervalMs);
+            var deadline = Environment.TickCount64 + EnrichPhaseWaitMs * 2;
+            while (Environment.TickCount64 < deadline)
+            {
+                var pending = await OnQueue(queue, b => AdvancePlayers(b, plants));
+                if (pending == 0) break;
+                await Task.Delay(PollIntervalMs);
+            }
         }
-        return await OnQueue(queue, b => CollectPlayers(b, plants, transferValueTexts));
+        finally
+        {
+            // CollectPlayers unbinds and closes every plant, including on a
+            // timeout/exception. This is what makes the chunk boundary a
+            // real cleanup boundary rather than merely a smaller loop.
+            result = await OnQueue(queue, b => CollectPlayers(b, plants, transferValueTexts));
+        }
+        return result;
     }
 
-    private static List<PlayerCtx> PlantPlayers(BindingSubsystem bindings, List<int> uids)
+    private static List<PlayerCtx> PlantPlayers(BindingSubsystem bindings, List<int> uids, string[] phase1Props = null)
     {
         var result = new List<PlayerCtx>(uids.Count);
         if (!GameSubsystems.TryGet<FM.GamePlugin.GameInteropSubsystem>(out var interop) || interop == null)
@@ -998,7 +1113,7 @@ internal static class QueryPlayers
                 var rootKey = NativeBindings.CreatePath(bindings, path, Bindings.NodeFlags.Default);
                 ctx.RootKey = rootKey;
 
-                foreach (var propName in Phase1Props)
+                foreach (var propName in (phase1Props ?? Phase1Props))
                     ctx.Phase1[propName] = PlantOneProp(bindings, rootKey, propName);
 
                 bindings.Set(ref rootKey, wrapped, Bindings.SetFlags.UpdateHandler | Bindings.SetFlags.ForceUpdateValue);
@@ -1089,10 +1204,8 @@ internal static class QueryPlayers
     private static JsonArray CollectPlayers(BindingSubsystem bindings, List<PlayerCtx> plants, Dictionary<int, string> transferValueTexts = null)
     {
         var players = new JsonArray();
-        int index = -1;
         foreach (var ctx in plants)
         {
-            index++;
             foreach (var slot in ctx.Phase1.Values) { PeekSlot(bindings, slot); CloseSlot(bindings, ctx.Interop, slot); }
             foreach (var slot in ctx.Phase2.Values) { PeekSlot(bindings, slot); CloseSlot(bindings, ctx.Interop, slot); }
 
@@ -1118,8 +1231,15 @@ internal static class QueryPlayers
             // reported "no value", so it's reported as missing rather than
             // silently defaulted to null-with-no-explanation.
             JsonNode transferValueNode = null;
-            if (transferValueTexts != null && transferValueTexts.TryGetValue(index, out var tvText) && !string.IsNullOrEmpty(tvText))
+            if (transferValueTexts != null && transferValueTexts.TryGetValue(ctx.Uid, out var tvText) && !string.IsNullOrEmpty(tvText))
+            {
                 transferValueNode = ParseTransferValue(tvText);
+                if (transferValueNode is JsonObject verifiedValue)
+                {
+                    verifiedValue["source"] = "player-database-ui";
+                    verifiedValue["uid_verified"] = ctx.Uid;
+                }
+            }
             else if (transferValueTexts != null)
                 missing.Add("transfer_value (ui-cell-not-read-for-this-row)");
 
@@ -1173,10 +1293,60 @@ internal static class QueryPlayers
         return -1;
     }
 
+    private static int? ReadOptionalInt(JsonNode node)
+    {
+        if (node == null) return null;
+        if (node is JsonValue jv && jv.TryGetValue<int>(out var i)) return i;
+        return int.TryParse(node.ToString(), out var parsed) ? parsed : null;
+    }
+
+    private static List<string> ReadStringArray(JsonNode node)
+    {
+        var result = new List<string>();
+        if (node is not JsonArray arr) return result;
+        foreach (var item in arr)
+        {
+            var value = item?.ToString()?.Trim();
+            if (!string.IsNullOrEmpty(value)) result.Add(value);
+        }
+        return result;
+    }
+
+    private static bool MatchesDataFilters(JsonObject row, int? ageMin, int? ageMax, List<string> positions)
+    {
+        if (row == null || row["error"] != null) return false;
+        if (ageMin.HasValue || ageMax.HasValue)
+        {
+            var age = ReadOptionalInt(row["age"]);
+            if (!age.HasValue || (ageMin.HasValue && age.Value < ageMin.Value) || (ageMax.HasValue && age.Value > ageMax.Value)) return false;
+        }
+        if (positions.Count > 0)
+        {
+            var actualRaw = row["position"]?.ToString();
+            var found = false;
+            foreach (var wanted in positions)
+            {
+                if (PositionDecode.MatchesSlot(actualRaw, wanted)) { found = true; break; }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    private static bool IsCandidateWindowTruncated(int available, int scanned) =>
+        available >= 0 && scanned >= 0 && available > scanned;
+
     private static JsonArray ToJsonArray(List<int> uids)
     {
         var arr = new JsonArray();
         foreach (var u in uids) arr.Add(u);
+        return arr;
+    }
+
+    private static JsonArray ToJsonArray(List<string> values)
+    {
+        var arr = new JsonArray();
+        foreach (var value in values) arr.Add(value);
         return arr;
     }
 

@@ -38,6 +38,10 @@ you; don't assume more.
   `transfer_value.sort:null` for players marked "Not for Sale" — that is
   the opposite of free or cheap; never fold it into an affordability filter
   as if it meant zero, and never state a price for a player who has none.
+  A usable live value must include `source:"player-database-ui"` and
+  `uid_verified` equal to that player's uid. If either proof field is absent
+  or mismatched, say it could not be verified; never reuse an earlier number
+  or attach a value to a player by list order.
 - **Never mix wage units.** Money fields are unit-labeled in their own key
   names (`*_weekly_eur`, `*_annual_eur`, etc. from `my_club`; wage display +
   sortable raw number from `squad_report`/enrich). Compare weekly to weekly,
@@ -68,14 +72,16 @@ you; don't assume more.
 3. `get_role_attributes` to ground any role-specific ask in the game's own
    definitions before you start judging candidates.
 4. `query_players` to search the database — filters are nested under
-   `filters` (currently only `scouted_only` is drivable; value/position/age
-   range filters are not exposed by the game's own UI headlessly, so filter
-   further yourself from `enrich` output). Use `enrich` to pull attributes,
-   wage, contract end date, and transfer value for the top candidates —
-   it's capped and slower than the bare uid list, so keep `enrich_max`
-   modest.
+   `filters`. Use `age_min`/`age_max` and `positions` for genuine bounded
+   game-data filtering; use `scouted_only` when the scouting toggle is useful.
+   `max` bounds the candidate window inspected, not the whole database, and
+   the response reports when that window was truncated. Filtering happens
+   before transfer-value scraping. Use `enrich` only for narrowed candidates
+   and keep `enrich_max` modest.
 5. `read_entity` for a deep dive on any one candidate or your own player
-   (attributes, contract, history) once you've narrowed the field.
+   (attributes, contract, history) once you've narrowed the field. Batch reads
+   are capped at 20 ids: never fan out hundreds of player reads; for three
+   prospects, read exactly those three.
 6. `squad_report` for your own club's depth chart and positional
    familiarity (`position_familiarity`).
 7. `inbox` (read-only in this profile) for context on offers, news, board

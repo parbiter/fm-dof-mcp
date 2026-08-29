@@ -17,7 +17,8 @@ echo "deployed: $GAME/BepInEx/plugins/FMBridge/FMBridge.dll"
 # Record where node, the chat service, and a usable PATH live so the bridge
 # can start the chat service itself when the game launches (the game's own
 # environment has none of them — Steam launches with a bare PATH, and the
-# service needs node plus the `claude` CLI). Without node this just warns:
+# service needs node plus the selected `codex` or `claude` CLI). Without node
+# this just warns:
 # the plugin skips autostart and the service can be run by hand.
 NODE_BIN="$(command -v node || true)"
 if [ -n "$NODE_BIN" ]; then
@@ -25,8 +26,9 @@ if [ -n "$NODE_BIN" ]; then
     echo "NODE=$NODE_BIN"
     echo "SCRIPT=$HERE/scripts/dof_chat_service.mjs"
     echo "PATH=$PATH"
-    # Optional model override for the DoF's replies (e.g. haiku for speed).
-    # The game-spawned service can't see your shell env, so it rides along here.
+    # Optional provider/model overrides for the DoF's replies. The game-spawned
+    # service can't see your shell env, so they ride along here.
+    if [ -n "${DOF_CHAT_PROVIDER:-}" ]; then echo "PROVIDER=$DOF_CHAT_PROVIDER"; fi
     if [ -n "${DOF_CHAT_MODEL:-}" ]; then echo "MODEL=$DOF_CHAT_MODEL"; fi
   } > "$GAME/BepInEx/plugins/FMBridge/chat_service.env"
   echo "chat service autostart configured (chat_service.env)"
