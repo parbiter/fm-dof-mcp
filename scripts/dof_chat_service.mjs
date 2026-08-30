@@ -60,44 +60,13 @@ const TOOL_LABELS = {
 // MCP tool names arrive as mcp__<server>__<tool>; the last segment keys the map.
 const toolLabel = (name) => TOOL_LABELS[String(name).split("__").pop()] ?? "working on it…";
 
-// Chat-only layer on top of the canonical dof-persona.md (which the MCP
-// server also serves, roleplay-free): in-character voice + panel-sized
-// formatting. The persona's data-honesty rules still win — character never
-// invents numbers.
-const CHAT_STYLE = `
-
-## In-game chat mode
-
-You are replying inside a small chat panel docked in the manager's FM26
-screen, mid-session. Stay in character the whole time: you are the club's
-Director of Football — a seasoned, dry-witted football man who has seen a
-thousand transfer windows. You answer to the board, not to the manager:
-speak as a senior colleague between equals — no "boss", no "gaffer", no
-deference. Opinionated, warm underneath, allergic to waffle.
-You may banter briefly, but you never bluff about data: every number still
-comes from your tools, and missing data is stated plainly, in character
-("my scouts haven't priced him yet").
-For live-save information and actions, use only the fm-dof MCP tools. Never
-use shell commands, repository files, web search, or general football memory
-as a substitute for those tools.
-
-You are talking to a person, not filing a report — this overrides the
-persona's cite-uids rule, which is for written analysis, not chat:
-- Never mention uids, internal field or variable names, tool names, or
-  the machinery behind your answers (data reads, flags, faults). If a
-  lookup fails, one in-character line ("couldn't get his numbers today")
-  and move on — no diagnostics.
-- Translate data into football speech: "a natural left-back", "on about
-  €1.1M a year", "the bigger prospect" — not "LeftBack familiarity 20"
-  or "PA 178".
-- Numbers only where they carry the argument (a fee, a wage, an age) —
-  two or three per reply, at most.
-
-Formatting, strictly: match length to the question — a simple question
-gets two or three sentences; 120 words is a hard ceiling for even the
-biggest ask, not a target. Roughly 50 characters per line wrap, plain
-prose or short dashed lists only — no markdown headers, no tables, no
-bold. Lead with the recommendation, then what justifies it.`;
+// The chat's system prompt is fully self-contained: the canonical
+// dof-persona.md (owned by the MCP server too, roleplay-free) plus the
+// chat-only voice/formatting layer in dof-chat-style.md, composed below at
+// startup. Neither CLI's own default agent identity (coding-agent tone,
+// tool etiquette, CLAUDE.md/AGENTS.md memory) is loaded — this composed
+// text fully replaces it so the in-game DoF never reads like a coding
+// assistant. See docs/INSTALL.md for how to edit the DoF's voice.
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -175,17 +144,27 @@ function call(req, timeoutMs = 30_000) {
 }
 
 // -------------------------------------------------------------- agent setup
-const persona = readFileSync(join(REPO, "mcp/fm-dof-mcp/prompts/dof-persona.md"), "utf8") + CHAT_STYLE;
+const dofPersona = readFileSync(join(REPO, "mcp/fm-dof-mcp/prompts/dof-persona.md"), "utf8");
+const chatStyle = readFileSync(join(REPO, "mcp/fm-dof-mcp/prompts/dof-chat-style.md"), "utf8");
+const systemPrompt = `${dofPersona}\n\n${chatStyle}`;
 const mcpServerPath = join(REPO, "mcp/fm-dof-mcp/dist/index.js");
 
 // Claude Code accepts an isolated MCP JSON file per invocation. Codex accepts
 // the equivalent server definition through per-run config overrides below.
-const mcpConfigPath = join(mkdtempSync(join(tmpdir(), "dof-chat-")), "mcp.json");
+const runtimeTmpDir = mkdtempSync(join(tmpdir(), "dof-chat-"));
+const mcpConfigPath = join(runtimeTmpDir, "mcp.json");
 writeFileSync(mcpConfigPath, JSON.stringify({
   mcpServers: {
     "fm-dof": { command: "node", args: [mcpServerPath] },
   },
 }));
+
+// Codex's `model_instructions_file` config key wants a path, not a string —
+// Claude Code's `--system-prompt` takes the text directly, so this file only
+// exists for Codex. Composed once at startup from the same two source files
+// above, so both providers always run the identical system prompt.
+const systemPromptPath = join(runtimeTmpDir, "dof-chat-system.md");
+writeFileSync(systemPromptPath, systemPrompt);
 
 // Keep the automation isolated from personal Codex configuration and put the
 // agent itself in a read-only sandbox. The one configured MCP server is the
@@ -204,12 +183,21 @@ const codexOptions = [
   "-c", 'mcp_servers.fm-dof.command="node"',
   "-c", `mcp_servers.fm-dof.args=${JSON.stringify([mcpServerPath])}`,
   "-c", 'mcp_servers.fm-dof.default_tools_approval_mode="approve"',
+  // Replaces Codex's own base instructions wholesale (coding-agent identity,
+  // shell/apply_patch tool etiquette) with the DoF system prompt, instead of
+  // layering the persona on top of them in the first user message.
+  "-c", `model_instructions_file=${JSON.stringify(systemPromptPath)}`,
 ];
 
 // Provider-specific conversation memory, carried across bubbles via resume
 // and across service restarts via a state file. Keeping the files separate
-// makes provider switching safe.
-const SESSION_FILE = join(tmpdir(), PROVIDER === "codex" ? "dof-chat-codex-thread-id" : "dof-chat-session-id");
+// makes provider switching safe. The "-v2" suffix marks the system-prompt
+// rework below: old session/thread ids were seeded with the persona pasted
+// into the first user message (Codex) or appended after the CLI's default
+// coding-agent prompt (Claude), so resuming them would keep replying with
+// that pollution however the prompt is built going forward. Bumping the
+// filename orphans those ids and starts both providers on fresh threads.
+const SESSION_FILE = join(tmpdir(), PROVIDER === "codex" ? "dof-chat-codex-thread-id-v2" : "dof-chat-session-id-v2");
 let sessionId = null;
 try { sessionId = readFileSync(SESSION_FILE, "utf8").trim() || null; } catch { }
 if (sessionId) log("resuming conversation", sessionId);
@@ -221,14 +209,15 @@ function saveSession(id) {
 
 function runCodex(userText, gen) {
   return new Promise((resolve) => {
-    // The persona is seeded into a new thread once; resumed turns retain it.
+    // The system prompt now rides entirely on model_instructions_file (set in
+    // codexOptions above), so every turn's prompt is just the user's text —
+    // no persona prefix to seed on the first turn.
     // `codex exec --json` emits completed agent messages and MCP lifecycle
     // events as JSONL. Unlike token-delta streaming, this still lets the panel
     // show any brief pre-tool aside before replacing it with the final answer.
-    const prompt = sessionId ? userText : `${persona}\n\n## Current request\n\n${userText}`;
     const args = sessionId
-      ? ["exec", "resume", ...codexOptions, sessionId, prompt]
-      : ["exec", ...codexOptions, prompt];
+      ? ["exec", "resume", ...codexOptions, sessionId, userText]
+      : ["exec", ...codexOptions, userText];
     const child = spawn("codex", args, { cwd: REPO, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let buf = "", err = "";
     let timedOut = false, cancelled = false, stopping = false;
@@ -350,7 +339,14 @@ function runClaude(userText, gen) {
       "--strict-mcp-config",
       "--tools", "",
       "--allowedTools", "mcp__fm-dof__*",
-      "--append-system-prompt", persona,
+      // Replaces Claude Code's own default system prompt (coding-agent
+      // identity, tool etiquette, terse CLI tone) instead of appending the
+      // persona after it — the composed DoF prompt is now the entire system
+      // prompt. --setting-sources "" additionally keeps any user/project/local
+      // CLAUDE.md and settings.json out of the session; nothing in this repo
+      // should leak into an in-character chat.
+      "--system-prompt", systemPrompt,
+      "--setting-sources", "",
     ];
     if (sessionId) args.push("--resume", sessionId);
     const child = spawn("claude", args, { cwd: REPO, stdio: ["ignore", "pipe", "pipe"], detached: true });

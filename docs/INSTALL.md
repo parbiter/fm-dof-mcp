@@ -144,6 +144,13 @@ the completed reply. Provider defaults are `gpt-5.6-luna` for Codex and
 The panel lives only in the running game session — it is never written
 into your save.
 
+The chat runs on its own dedicated system prompt — `mcp/fm-dof-mcp/prompts/dof-persona.md`
+plus `mcp/fm-dof-mcp/prompts/dof-chat-style.md`, composed at service startup
+— rather than the Codex or Claude Code CLI's default agent prompt, so the
+DoF never answers like a coding assistant. Editing either file changes how
+the DoF talks and what it does or doesn't know about on the next service
+start (a game restart, or a manual restart of `dof_chat_service.mjs`).
+
 ## Optional: point an external MCP client at it
 
 The same MCP server the chat runs on can be attached to any MCP client —
