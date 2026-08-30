@@ -5,9 +5,8 @@ Manager 26**. It's a mod for macOS (Apple Silicon) that adds a "Chat with
 DoF" entry to the game's Recruitment menu and opens a chat panel docked
 over your running career. Ask it football questions — squad depth,
 transfer targets, wage headroom — and its answers are backed by live reads
-from your actual save, not generic football takes. It can also add players
-to your shortlist when you ask it to, but it never saves, advances time, or
-does anything else on your behalf.
+from your actual save, not generic football takes. It never saves,
+advances time, or does anything else on your behalf — it only talks.
 
 ## Example
 
@@ -23,13 +22,8 @@ one on its own numbers instead of a vague "he's decent": one flagged
 "pursue now," another "monitor, don't commit," a third "watchlist only,
 over budget." One recommendation, Raphaël Guerreiro, came back with his
 actual wage range (€5.34M–€6.96M) and transfer value (€8.8M–€10.5M),
-pulled straight from the game.
-
-> "Shortlist the top five."
-
-Five players appeared in the game's own shortlist a moment later — the
-same shortlist you'd build by hand, just faster. The in-game date was
-identical before and after: nothing was saved or advanced.
+pulled straight from the game — and the in-game date was identical before
+and after the conversation: nothing was saved or advanced.
 
 A captured demo video/GIF of a full session is coming — this section will
 be updated with it.
@@ -39,9 +33,9 @@ be updated with it.
 - **A Mac with Apple Silicon** (M1 or newer). No Windows, no Intel Mac —
   see [Platform support](#platform-support) below.
 - **Football Manager 26** via Steam.
-- Comfortable enough with Terminal to paste a handful of commands — see
-  [`docs/INSTALL.md`](docs/INSTALL.md) for every step, exact commands
-  included.
+- Comfortable enough with Terminal to paste roughly fifteen commands
+  across 8 steps — see [`docs/INSTALL.md`](docs/INSTALL.md) for every
+  step, exact commands included.
 - An account with **one** of the two AI providers the chat can use:
   [Claude Code](https://claude.com/claude-code) (needs an Anthropic
   account) or [Codex](https://developers.openai.com/codex/cli) (needs an
@@ -50,7 +44,12 @@ be updated with it.
 
 ## Install
 
-See [`docs/INSTALL.md`](docs/INSTALL.md) for the full, numbered
+```bash
+git clone https://github.com/parbiter/fm-dof-mcp.git
+cd fm-dof-mcp
+```
+
+Then see [`docs/INSTALL.md`](docs/INSTALL.md) for the full, numbered
 walkthrough — installing the mod loader, building the two small helper
 programs, signing in to an AI provider, and launching the game so the mod
 actually loads.
@@ -58,9 +57,10 @@ actually loads.
 ## Playing with it
 
 1. Launch Football Manager 26 through the special launcher script set up
-   during install — not a plain double-click through Steam, which can
-   skip the mod loader entirely. See
-   [`docs/INSTALL.md`](docs/INSTALL.md#6-launch-the-game-so-the-mod-loads-2-min)
+   during install (`run_bepinex_arm64.sh`, placed inside your FM26 game
+   folder) — not a plain double-click through Steam, which can skip the
+   mod loader entirely. See
+   [`docs/INSTALL.md`](docs/INSTALL.md#7-launch-the-game-so-the-mod-loads-2-min)
    for why and how.
 2. Load into a career.
 3. Open the **Recruitment** menu in the sidebar and click **Chat with
@@ -77,14 +77,12 @@ actually loads.
 - Read your live save — squad, budgets, wages, scouted players, tactical
   roles, and more.
 - Answer with real numbers pulled from your save, not generic takes.
-- Add, remove, or create entries in your in-game shortlist, only when you
-  ask it to.
 
 **Can't:**
 
 - Save your game, advance time, or continue to the next match/day.
-- Make a transfer offer, negotiate, or touch anything beyond the
-  shortlist.
+- Make a transfer offer, negotiate, or take any action in the game beyond
+  answering in chat.
 - Click around the game's other screens for you.
 - Make up a stat it doesn't have — if something isn't available, it says
   so instead of guessing.
@@ -103,24 +101,22 @@ the machine, don't use the chat feature.
 
 The chat runs on a small [MCP](https://modelcontextprotocol.io) (Model
 Context Protocol — the standard way AI tools connect to external data and
-actions) server exposing 8 tools plus a `dof-persona` prompt. A BepInEx
-plugin inside the game exposes the read-mostly game data over a localhost
-WebSocket; the MCP server wraps that as tools; a small host-side service
-runs the actual chat loop. You can point any MCP-speaking client — Codex,
-Claude Code, Claude Desktop, or otherwise — at the same server for longer
-written analysis outside the game window. See
-[`docs/INSTALL.md`](docs/INSTALL.md#advanced-external-mcp-clients) for
+actions) server exposing 8 tools plus a `dof-persona` prompt. A
+BepInEx plugin inside the game exposes the read-mostly game data over a
+localhost WebSocket; the MCP server wraps that as tools; a small
+host-side service runs the actual chat loop. You can point any
+MCP-speaking client — Codex, Claude Code, Claude Desktop, or otherwise —
+at the same server for longer written analysis outside the game window.
+See [`docs/INSTALL.md`](docs/INSTALL.md#advanced-external-mcp-clients) for
 client wiring.
 
 <details>
 <summary>Design principles</summary>
 
 - **Advise-only.** There is no tool that saves the game, advances time, or
-  drives arbitrary UI. The action surface is exactly one thing: shortlist
-  management (`create`/`add`/`remove`), and only when explicitly asked.
-  Recommending, arguing, and deciding stay separated from acting. (The
-  in-game chat overlay adds UI elements of its own to draw bubbles in —
-  it never reads or drives the game's screens.)
+  drives arbitrary UI. Recommending, arguing, and deciding stay separated
+  from acting. (The in-game chat overlay adds UI elements of its own to
+  draw bubbles in — it never reads or drives the game's screens.)
 - **Honest data, not guesses.** Every claim traces to a tool response.
   Reads report "not found" rather than fabricating plausible-looking
   values for something that doesn't resolve; an unknown transfer value is
