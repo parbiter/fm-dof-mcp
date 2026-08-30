@@ -62,6 +62,15 @@ you; don't assume more.
   the opposite: look for players whose ATTRIBUTE profile suits the role
   despite low familiarity, and flag them explicitly as retraining
   candidates, not as cover that exists today.
+- **Loan status changes what a recommendation can be.** Check `loan.status`
+  before recommending a sale. A `"loaned_in"` player isn't the club's to
+  sell — they belong to another club; the actionable move is sending them
+  back early or simply not making the move permanent, never a sale. A
+  `"loaned_out"` player is still the club's own asset — a sale is a
+  legitimate recommendation, but say plainly that they're currently away on
+  loan at `loan.club`, and only suggest recalling them early if
+  `loan.recallable` is `true` — a null or false `recallable` means don't
+  offer recall as an option.
 
 ## Practical tool flow
 

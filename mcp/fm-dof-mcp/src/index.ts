@@ -138,11 +138,22 @@ const FOUND_FALSE_NOTE =
   "person also comes back with an additive 'position_decoded' sibling (e.g. \"D (RLC)\", " +
   "\"AM (RL)\", \"ST (C)\") alongside the raw bitmask. Every response — success or found:false — " +
   "carries 'latency_ms' for the round trip.";
+const LOAN_NOTE =
+  "Requesting a person's 'OnLoanFrom' or 'LoanContract' prop (directly, via 'props', or via the " +
+  "contract section) auto-attaches a 'Loan' object alongside the normal contract data: " +
+  "{status: \"loaned_in\"|\"loaned_out\"|null, club: <other club name or null>, " +
+  "until: <return/expiry date or null>, recallable: <bool or null>}. status:null means the player " +
+  "is not on loan at all. \"loaned_in\" means the human club is BORROWING this player — they " +
+  "belong to 'club' and are not the human club's to sell (advise sending them back early or not " +
+  "making the move permanent, never a sale); \"loaned_out\" means the human club still OWNS this " +
+  "player but has sent them away to 'club' — they can still be sold, and can only be recalled " +
+  "early when 'recallable' is true. 'recallable' has no discoverable binding in-game and is " +
+  "currently always null — treat null as unknown, never as false.";
 
 server.registerTool(
   "read_entity",
   {
-    description: `${READ_ENTITY_KIND_LEAD} ${MANIFEST_ON_READ_NOTE} ${REF_UID_NOTE} ${FOUND_FALSE_NOTE}`,
+    description: `${READ_ENTITY_KIND_LEAD} ${MANIFEST_ON_READ_NOTE} ${REF_UID_NOTE} ${FOUND_FALSE_NOTE} ${LOAN_NOTE}`,
     inputSchema: {
       kind: z.enum(["person", "club", "nation", "competition"]).describe("Entity kind to read"),
       uids: UID_SCHEMA,
@@ -198,7 +209,20 @@ server.registerTool(
       "\"AM (RL)\", \"ST (C)\"), position_familiarity (~1-20 per position: how NATURAL the player is " +
       "in that slot — 20 means plays-there-natively, NOT a quality/ability score; use it to filter " +
       "candidates, never to rank them), perceived potential ability, wage (display string + raw " +
-      "sortable number), and contract (end date, length, days elapsed). The target club is discovered " +
+      "sortable number), contract (end date, length, days elapsed), and loan " +
+      "{status: \"loaned_in\"|\"loaned_out\"|null, club: <other club name or null>, " +
+      "until: <return/expiry date or null>, recallable: <bool or null>}. status:null means not on " +
+      "loan. \"loaned_in\" players are on loan FROM 'club' — they belong to someone else and are " +
+      "not this club's to sell (advise sending back early / not making it permanent instead). " +
+      "\"loaned_out\" players are still owned by this club but currently away at 'club' — they can " +
+      "still be sold, and can only be recalled before their loan ends when 'recallable' is true " +
+      "(it has no discoverable binding in-game and is currently always null — treat null as " +
+      "unknown, never as false). Players out on loan are frequently NOT part of the team's own " +
+      "roster binding (they sit on their loan destination's team instead), so this report also " +
+      "returns a separate top-level 'loaned_out' array (same row shape, plus 'loaned_out_count') " +
+      "covering every player the club has out on loan regardless of which team they currently sit " +
+      "on — check it in addition to 'players' before concluding a loaned-out player doesn't exist. " +
+      "The target club is discovered " +
       "dynamically like my_club unless club_uid overrides it. 'squad' selects which team via FM's own " +
       "club-level team reference (not a guessed age band — naming/tiering conventions vary by " +
       "club/country): 'first' (default, MainTeam), 'b' (HighestLevelYouthTeam — for many clubs this " +

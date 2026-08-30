@@ -230,6 +230,34 @@ internal static class ReadEntity
             && propNames.Contains("TransferValue");
         int transferValueScrapesAttempted = 0;
 
+        // Loan resolution: the caller asked for OnLoanFrom and/or
+        // LoanContract (see EntityVocabulary.cs person.contract/relations),
+        // both of which land as bare unresolved $refs with no further
+        // read_entity call able to chase them (ContractReference/
+        // ClubReference-by-arbitrary-uid aren't among the four supported
+        // kinds) -- so this synthesizes a "Loan" field with the same
+        // {status, club, until, recallable} shape squad_report's per-player
+        // `loan` object uses, reusing the exact same live-proven logic
+        // (compare OnLoanFrom's resolved uid against the human club's own
+        // uid; Club is the player's CURRENT employing club, which is the
+        // loan destination while loaned out). "Club" and "OnLoanFrom" are
+        // synthetically requested when needed (mirroring the IsValid/Name
+        // pattern above) and stripped back out unless the caller asked for
+        // them directly.
+        bool wantsLoan = string.Equals(kind, "person", StringComparison.OrdinalIgnoreCase)
+            && (propNames.Contains("OnLoanFrom") || propNames.Contains("LoanContract"));
+        bool onLoanFromSynthetic = false, clubSynthetic = false;
+        if (wantsLoan)
+        {
+            if (!checkPropNames.Contains("OnLoanFrom")) { checkPropNames.Add("OnLoanFrom"); onLoanFromSynthetic = true; }
+            if (!checkPropNames.Contains("Club")) { checkPropNames.Add("Club"); clubSynthetic = true; }
+        }
+        int? myClubUid = null;
+        if (wantsLoan)
+        {
+            try { myClubUid = await OnQueue(queue, MyClub.DiscoverHumanClubUid); } catch { }
+        }
+
         var entities = new JsonArray();
         var startedMs = Environment.TickCount64;
         for (var i = 0; i < uids.Count; i++)
@@ -260,6 +288,13 @@ internal static class ReadEntity
                         {
                             missingCap.Add("TransferValue (ui-scrape-cap-reached; max " + TransferValueUiScrapeMaxUids + " uids per read_entity call)");
                         }
+                    }
+
+                    if (wantsLoan)
+                    {
+                        try { await ApplyLoanResolution(queue, entry, uid, myClubUid); } catch { }
+                        if (onLoanFromSynthetic) StripSyntheticProp(entry, "OnLoanFrom");
+                        if (clubSynthetic) StripSyntheticProp(entry, "Club");
                     }
                 }
                 catch (Exception e)
@@ -390,6 +425,241 @@ internal static class ReadEntity
         {
             missing2.Add("TransferValue (ui-cell-not-read; player database row could not be located/scrolled/scraped)");
         }
+    }
+
+    /// <summary>Removes a synthetically-requested prop (one RunAsync added to
+    /// checkPropNames on the caller's behalf, e.g. "Club" needed only to
+    /// resolve loan direction) from both data and missing[] so it never
+    /// leaks into a response the caller didn't ask for -- same pattern as
+    /// the IsValid/Name stripping in PostProcessFound.</summary>
+    private static void StripSyntheticProp(JsonObject entry, string propName)
+    {
+        if (entry?["data"] is JsonObject data) data.Remove(propName);
+        if (entry?["missing"] is JsonArray missing)
+        {
+            for (var i = missing.Count - 1; i >= 0; i--)
+            {
+                var s = missing[i]?.ToString() ?? "";
+                if (s == propName || s.StartsWith(propName + " (", StringComparison.Ordinal))
+                    missing.RemoveAt(i);
+            }
+        }
+    }
+
+    /// <summary>Synthesizes entry.data["Loan"] = {status, club, until,
+    /// recallable} from the already-landed OnLoanFrom/Club refs plus one
+    /// extra targeted fetch (LoanContract.EndDate + the other club's Name)
+    /// -- see the wantsLoan comment in RunAsync for the direction logic.
+    /// recallable has no discoverable binding (exhaustive live search) and
+    /// is always null, matching squad_report's own loan object.</summary>
+    private static async Task ApplyLoanResolution(FMBridge.Voice.MainThreadQueue queue, JsonObject entry, int uid, int? myClubUid)
+    {
+        if (entry?["data"] is not JsonObject data) return;
+        if (data["OnLoanFrom"] is not JsonObject olf) return; // never landed / unknown-property-name
+
+        int? olfUid = olf["uid"] != null ? (int)olf["uid"] : (int?)null;
+        string status = null;
+        int? otherClubUid = null;
+        if (olfUid.HasValue)
+        {
+            if (myClubUid.HasValue && olfUid.Value == myClubUid.Value)
+            {
+                status = "loaned_out";
+                otherClubUid = (data["Club"] as JsonObject)?["uid"] is JsonValue cv && cv.TryGetValue<int>(out var cuid) ? cuid : (int?)null;
+            }
+            else
+            {
+                status = "loaned_in";
+                otherClubUid = olfUid;
+            }
+        }
+
+        var loan = new JsonObject { ["status"] = status, ["club"] = null, ["until"] = null, ["recallable"] = null };
+        if (status != null)
+        {
+            var (clubName, until) = await FetchLoanExtras(queue, uid, otherClubUid);
+            loan["club"] = clubName;
+            loan["until"] = until;
+        }
+        data["Loan"] = loan;
+    }
+
+    /// <summary>One targeted extra fetch for the two pieces of loan detail
+    /// nothing else surfaces: LoanContract.EndDate (a fresh fabricate+chain --
+    /// the original per-uid read already tore its own channels down by the
+    /// time RunAsync reaches loan post-processing, so this repeats the
+    /// fabricate/bind step, same live-proven mechanism, not a new one) and
+    /// the other club's display Name (fabricated fresh by uid, exactly like
+    /// SquadReport.PlantClubName does for its own loan.club field).</summary>
+    private static async Task<(string clubName, JsonNode until)> FetchLoanExtras(FMBridge.Voice.MainThreadQueue queue, int personUid, int? otherClubUid)
+    {
+        var plant = await OnQueue(queue, b => PlantLoanExtras(b, personUid, otherClubUid));
+        var deadline = Environment.TickCount64 + PerUidWaitMs;
+        while (Environment.TickCount64 < deadline)
+        {
+            var pending = await OnQueue(queue, b => PeekLoanExtras(b, plant));
+            if (pending == 0) break;
+            await Task.Delay(PollIntervalMs);
+        }
+        await OnQueue(queue, b => { StartLoanContractChain(b, plant); return true; });
+        var deadline2 = Environment.TickCount64 + PerUidWaitMs;
+        while (Environment.TickCount64 < deadline2)
+        {
+            var pending = await OnQueue(queue, b => PeekLoanExtras(b, plant));
+            if (pending == 0) break;
+            await Task.Delay(PollIntervalMs);
+        }
+        return await OnQueue(queue, b => CollectLoanExtras(b, plant));
+    }
+
+    private sealed class LoanExtrasPlant
+    {
+        public string Error;
+        public FM.GamePlugin.GameInteropSubsystem Interop;
+        public Bindings.Key LoanContractKey;
+        public Bindings.ValueChangedCallback LoanContractCb;
+        public TypedValue LoanContractValue;
+        public bool LoanContractLanded;
+        public Bindings.Key EndDateKey;
+        public Bindings.ValueChangedCallback EndDateCb;
+        public string EndDateValue;
+        public bool EndDateChainStarted;
+        public bool HasClub;
+        public Bindings.Key ClubNameKey;
+        public Bindings.ValueChangedCallback ClubNameCb;
+        public string ClubNameValue;
+    }
+
+    private static LoanExtrasPlant PlantLoanExtras(BindingSubsystem bindings, int personUid, int? otherClubUid)
+    {
+        var plant = new LoanExtrasPlant();
+        if (!GameSubsystems.TryGet<FM.GamePlugin.GameInteropSubsystem>(out var interop) || interop == null)
+        {
+            plant.Error = "game-interop-subsystem-not-found";
+            return plant;
+        }
+        plant.Interop = interop;
+
+        try
+        {
+            var fabricated = new FM.UI.PersonReference(personUid);
+            var wrapped = TypedValue.Create<Il2CppSystem.Object>(fabricated.Cast<Il2CppSystem.Object>());
+            var path = "__bridge.rele." + Interlocked.Increment(ref _counter);
+            var rootKey = NativeBindings.CreatePath(bindings, path, Bindings.NodeFlags.Default);
+            plant.LoanContractKey = NativeBindings.CreateRooted(bindings, rootKey, "LoanContract", Bindings.NodeFlags.RequiresContext);
+            plant.LoanContractCb = Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Bindings.ValueChangedCallback>(
+                (Action<Bindings.Key, TypedValue>)((k, v) => { plant.LoanContractValue = v; plant.LoanContractLanded = v != null; }));
+            bindings.Bind(ref plant.LoanContractKey, plant.LoanContractCb);
+            bindings.Set(ref rootKey, wrapped, Bindings.SetFlags.UpdateHandler | Bindings.SetFlags.ForceUpdateValue);
+        }
+        catch (Exception e) { plant.Error = "person-fabricate-failed: " + e.Message; }
+
+        if (otherClubUid.HasValue)
+        {
+            plant.HasClub = true;
+            try
+            {
+                var fabricatedClub = new FM.UI.ClubReference(otherClubUid.Value);
+                var wrappedClub = TypedValue.Create<Il2CppSystem.Object>(fabricatedClub.Cast<Il2CppSystem.Object>());
+                var path2 = "__bridge.relc." + Interlocked.Increment(ref _counter);
+                var clubRootKey = NativeBindings.CreatePath(bindings, path2, Bindings.NodeFlags.Default);
+                plant.ClubNameKey = NativeBindings.CreateRooted(bindings, clubRootKey, "Name", Bindings.NodeFlags.RequiresContext);
+                plant.ClubNameCb = Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Bindings.ValueChangedCallback>(
+                    (Action<Bindings.Key, TypedValue>)((k, v) => { try { plant.ClubNameValue = FMBridge.Eyes.TreeWalker.Describe(v); } catch { } }));
+                bindings.Bind(ref plant.ClubNameKey, plant.ClubNameCb);
+                bindings.Set(ref clubRootKey, wrappedClub, Bindings.SetFlags.UpdateHandler | Bindings.SetFlags.ForceUpdateValue);
+            }
+            catch { }
+        }
+        return plant;
+    }
+
+    private static int PeekLoanExtras(BindingSubsystem bindings, LoanExtrasPlant plant)
+    {
+        if (plant.Error != null) return 0;
+        var pending = 0;
+        if (!plant.LoanContractLanded)
+        {
+            try
+            {
+                var d = bindings.Get(ref plant.LoanContractKey);
+                if (d != null) { plant.LoanContractValue = d; plant.LoanContractLanded = true; }
+            }
+            catch { }
+            if (!plant.LoanContractLanded) pending++;
+        }
+        if (plant.EndDateChainStarted && plant.EndDateValue == null)
+        {
+            try
+            {
+                var d = bindings.Get(ref plant.EndDateKey);
+                if (d != null) plant.EndDateValue = FMBridge.Eyes.TreeWalker.Describe(d);
+            }
+            catch { }
+            if (plant.EndDateValue == null) pending++;
+        }
+        if (plant.HasClub && plant.ClubNameValue == null)
+        {
+            try
+            {
+                var d = bindings.Get(ref plant.ClubNameKey);
+                if (d != null) plant.ClubNameValue = FMBridge.Eyes.TreeWalker.Describe(d);
+            }
+            catch { }
+            if (plant.ClubNameValue == null) pending++;
+        }
+        return pending;
+    }
+
+    private static void StartLoanContractChain(BindingSubsystem bindings, LoanExtrasPlant plant)
+    {
+        if (plant.Error != null || plant.EndDateChainStarted || !plant.LoanContractLanded) return;
+        try
+        {
+            var contractTv = bindings.Get(ref plant.LoanContractKey);
+            if (contractTv != null)
+            {
+                plant.EndDateKey = NativeBindings.CreateRooted(bindings, plant.LoanContractKey, "EndDate", Bindings.NodeFlags.RequiresContext);
+                plant.EndDateCb = Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Bindings.ValueChangedCallback>(
+                    (Action<Bindings.Key, TypedValue>)((k, v) => { try { plant.EndDateValue = FMBridge.Eyes.TreeWalker.Describe(v); } catch { } }));
+                bindings.Bind(ref plant.EndDateKey, plant.EndDateCb);
+                bindings.Set(ref plant.LoanContractKey, contractTv, Bindings.SetFlags.UpdateHandler | Bindings.SetFlags.ForceUpdateValue);
+                plant.EndDateChainStarted = true;
+            }
+        }
+        catch { }
+    }
+
+    private static (string clubName, JsonNode until) CollectLoanExtras(BindingSubsystem bindings, LoanExtrasPlant plant)
+    {
+        PeekLoanExtras(bindings, plant);
+        string clubName = plant.HasClub && plant.ClubNameValue != null ? Decode(plant.ClubNameValue)?.ToString() : null;
+        JsonNode until = plant.EndDateValue != null ? Decode(plant.EndDateValue) : null;
+        try
+        {
+            var k = plant.LoanContractKey; bindings?.Unbind(ref k, plant.LoanContractCb);
+            plant.Interop?.CloseChannel(k);
+        }
+        catch { }
+        if (plant.EndDateChainStarted)
+        {
+            try
+            {
+                var k2 = plant.EndDateKey; bindings?.Unbind(ref k2, plant.EndDateCb);
+                plant.Interop?.CloseChannel(k2);
+            }
+            catch { }
+        }
+        if (plant.HasClub)
+        {
+            try
+            {
+                var k3 = plant.ClubNameKey; bindings?.Unbind(ref k3, plant.ClubNameCb);
+                plant.Interop?.CloseChannel(k3);
+            }
+            catch { }
+        }
+        return (clubName, until);
     }
 
     /// <summary>

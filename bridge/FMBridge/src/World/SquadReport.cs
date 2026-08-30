@@ -84,7 +84,23 @@ internal static class SquadReport
 
     private static string[] BuildTopProps()
     {
-        var list = new List<string> { "Name", "Age", "Position", "PerceivedPotentialAbility", "FullContract" };
+        // OnLoanFrom/Club/LoanContract: loan-status trio. OnLoanFrom lands as
+        // NullReference (no uid) for a non-loaned player, or a ClubReference
+        // for one who is; Club is the player's CURRENT employing club (their
+        // own club normally, or the loan destination while out on loan) --
+        // live-probed: a loaned-OUT player's own Club resolves to the
+        // borrowing club, not the human club, so comparing OnLoanFrom's uid
+        // against the human club's own uid is enough to tell the two loan
+        // directions apart without any Team/TeamReference hop. LoanContract
+        // is a real ContractReference for EVERY player regardless of loan
+        // status (confirmed live) -- it is only chained into EndDate once
+        // OnLoanFrom has resolved to a real (non-null) club, see
+        // AdvancePlayers, so non-loaned players never pay for the extra hop.
+        var list = new List<string>
+        {
+            "Name", "Age", "Position", "PerceivedPotentialAbility", "FullContract",
+            "OnLoanFrom", "Club", "LoanContract",
+        };
         list.AddRange(AbilityProps);
         return list.ToArray();
     }
@@ -187,19 +203,85 @@ internal static class SquadReport
             }
             if (uids.Count > MaxPlayers) uids = uids.GetRange(0, MaxPlayers);
 
-            // Step 3: batch two-phase chained read across ALL players,
-            // overlapped (plant-all -> shared poll -> collect-all).
-            var plants = await OnQueue(queue, b => PlantPlayers(b, uids));
+            // Step 2b: club-wide loaned-out roster (Club.PlayersOutOnLoan) --
+            // catches loaned-out players who sit on their loan destination's
+            // OWN team and so never appear in Team.Players above (confirmed
+            // live: most do not). De-duped against the main squad uids so a
+            // player never appears twice in the response.
+            var loanRosterPlant = await OnQueue(queue, b => PlantEntityList(b, "club", clubUid, "PlayersOutOnLoan"));
+            var loanRosterDeadline = Environment.TickCount64 + PhaseWaitMs;
+            while (Environment.TickCount64 < loanRosterDeadline)
+            {
+                var pend = await OnQueue(queue, b => PeekEntityList(b, loanRosterPlant));
+                if (pend == 0) break;
+                await Task.Delay(PollIntervalMs);
+            }
+            var loanRosterUidsRaw = await OnQueue(queue, b => CollectPersonUids(b, loanRosterPlant, MaxPlayers));
+            var mainUidSet = new HashSet<int>(uids);
+            var loanedOutUids = new List<int>();
+            foreach (var u in loanRosterUidsRaw)
+                if (!mainUidSet.Contains(u) && !loanedOutUids.Contains(u)) loanedOutUids.Add(u);
+            if (loanedOutUids.Count > MaxPlayers) loanedOutUids = loanedOutUids.GetRange(0, MaxPlayers);
+
+            // Step 3: batch two-phase chained read across ALL players (main
+            // squad + loaned-out-only), overlapped (plant-all -> shared poll
+            // -> collect-all) via one combined poll loop for both rosters.
+            var mainPlants = await OnQueue(queue, b => PlantPlayers(b, uids, clubUid));
+            var loanedOutPlants = loanedOutUids.Count > 0
+                ? await OnQueue(queue, b => PlantPlayers(b, loanedOutUids, clubUid))
+                : new List<PlayerCtx>();
+            var combinedPlants = new List<PlayerCtx>(mainPlants.Count + loanedOutPlants.Count);
+            combinedPlants.AddRange(mainPlants);
+            combinedPlants.AddRange(loanedOutPlants);
+
             var deadline = Environment.TickCount64 + PhaseWaitMs * 2;
             while (Environment.TickCount64 < deadline)
             {
-                var pending = await OnQueue(queue, b => AdvancePlayers(b, plants));
+                var pending = await OnQueue(queue, b => AdvancePlayers(b, combinedPlants));
                 if (pending == 0) break;
                 await Task.Delay(PollIntervalMs);
             }
-            var players = await OnQueue(queue, b => CollectPlayers(b, plants));
+
+            // Step 4: resolve loan club/destination display names -- bounded
+            // by distinct club count, not player count (see PlantClubName).
+            var clubUidsNeeded = new HashSet<int>();
+            foreach (var ctx in combinedPlants)
+                if (ctx.LoanOtherClubUid.HasValue) clubUidsNeeded.Add(ctx.LoanOtherClubUid.Value);
+
+            var clubNames = new Dictionary<int, string>();
+            if (clubUidsNeeded.Count > 0)
+            {
+                var namePlants = await OnQueue(queue, b =>
+                {
+                    var list = new List<ClubNamePlant>();
+                    foreach (var cu in clubUidsNeeded) list.Add(PlantClubName(b, cu));
+                    return list;
+                });
+                var nameDeadline = Environment.TickCount64 + PhaseWaitMs;
+                while (Environment.TickCount64 < nameDeadline)
+                {
+                    var pend = await OnQueue(queue, b =>
+                    {
+                        var p = 0;
+                        foreach (var np in namePlants) p += PeekClubName(b, np);
+                        return p;
+                    });
+                    if (pend == 0) break;
+                    await Task.Delay(PollIntervalMs);
+                }
+                clubNames = await OnQueue(queue, b =>
+                {
+                    var map = new Dictionary<int, string>();
+                    foreach (var np in namePlants) map[np.Uid] = CollectClubName(b, np);
+                    return map;
+                });
+            }
+
+            var players = await OnQueue(queue, b => CollectPlayers(b, mainPlants, clubNames));
+            var loanedOut = await OnQueue(queue, b => CollectPlayers(b, loanedOutPlants, clubNames));
 
             SortPlayers(players);
+            SortPlayers(loanedOut);
 
             sw.Stop();
             return new JsonObject
@@ -211,6 +293,8 @@ internal static class SquadReport
                 ["route"] = route,
                 ["players"] = players,
                 ["count"] = players.Count,
+                ["loaned_out"] = loanedOut,
+                ["loaned_out_count"] = loanedOut.Count,
                 ["discovery"] = discovery,
                 ["latency_ms"] = sw.Elapsed.TotalMilliseconds,
             };
@@ -422,11 +506,22 @@ internal static class SquadReport
         public readonly Dictionary<string, PropSlot> Contract = new();
         public bool ContractPhaseStarted;
         public bool ContractPhaseAttempted;
+
+        // Loan status (see BuildTopProps comment). MyClubUid is the human
+        // club's own uid, threaded through from Enqueue, needed to tell
+        // loaned_out (OnLoanFrom.uid == MyClubUid) from loaned_in
+        // (OnLoanFrom.uid != MyClubUid, non-null) apart.
+        public int MyClubUid;
+        public readonly Dictionary<string, PropSlot> Loan = new();
+        public bool LoanStatusComputed;
+        public string LoanStatus; // "loaned_in" | "loaned_out" | null
+        public int? LoanOtherClubUid; // parent club (loaned_in) or destination club (loaned_out)
+        public bool LoanChainStarted;
     }
 
     private static int _counter;
 
-    private static List<PlayerCtx> PlantPlayers(BindingSubsystem bindings, List<int> uids)
+    private static List<PlayerCtx> PlantPlayers(BindingSubsystem bindings, List<int> uids, int myClubUid)
     {
         var result = new List<PlayerCtx>(uids.Count);
         if (!GameSubsystems.TryGet<FM.GamePlugin.GameInteropSubsystem>(out var interop) || interop == null)
@@ -436,7 +531,7 @@ internal static class SquadReport
         }
         foreach (var uid in uids)
         {
-            var ctx = new PlayerCtx { Uid = uid, Interop = interop };
+            var ctx = new PlayerCtx { Uid = uid, Interop = interop, MyClubUid = myClubUid };
             try
             {
                 var fabricated = new FM.UI.PersonReference(uid);
@@ -526,6 +621,63 @@ internal static class SquadReport
             // add here -- avoids double-counting the same wait.
             if (ctx.ContractPhaseStarted)
                 foreach (var slot in ctx.Contract.Values) pending += PeekSlot(bindings, slot);
+
+            // Loan status: computed once both OnLoanFrom and Club have
+            // resolved (both are simple one-hop Top slots, already counted
+            // above while pending). A non-null OnLoanFrom uid equal to the
+            // human club's own uid means this player is OUT on loan from us
+            // (Club then holds the borrowing club); any other non-null uid
+            // means the player is IN on loan from that club (OnLoanFrom IS
+            // the parent club, no further hop needed); a NullReference
+            // OnLoanFrom means not on loan at all.
+            if (!ctx.LoanStatusComputed
+                && ctx.Top.TryGetValue("OnLoanFrom", out var olf) && olf.Value != null && !olf.NeedsRecheck
+                && ctx.Top.TryGetValue("Club", out var clubSlot) && clubSlot.Value != null && !clubSlot.NeedsRecheck)
+            {
+                ctx.LoanStatusComputed = true;
+                if (olf.RefUid.HasValue)
+                {
+                    if (olf.RefUid.Value == ctx.MyClubUid)
+                    {
+                        ctx.LoanStatus = "loaned_out";
+                        ctx.LoanOtherClubUid = clubSlot.RefUid;
+                    }
+                    else
+                    {
+                        ctx.LoanStatus = "loaned_in";
+                        ctx.LoanOtherClubUid = olf.RefUid;
+                    }
+                }
+                else
+                {
+                    ctx.LoanStatus = null;
+                }
+            }
+
+            // Chain LoanContract -> EndDate only for an actual loan (never
+            // for the ~30 non-loaned players on a typical roster) -- kept as
+            // its own retry gate (not folded into the block above) because
+            // LoanContract can legitimately land a tick or two after
+            // OnLoanFrom/Club do, and re-checking each tick until it lands
+            // costs nothing once LoanStatus is already known.
+            if (ctx.LoanStatusComputed && ctx.LoanStatus != null && !ctx.LoanChainStarted
+                && ctx.Top.TryGetValue("LoanContract", out var lc) && lc.Value != null)
+            {
+                try
+                {
+                    var loanContractTv = bindings.Get(ref lc.Key);
+                    if (loanContractTv != null)
+                    {
+                        var slot = PlantOneProp(bindings, lc.Key, "EndDate");
+                        ctx.Loan["EndDate"] = slot;
+                        bindings.Set(ref lc.Key, loanContractTv, Bindings.SetFlags.UpdateHandler | Bindings.SetFlags.ForceUpdateValue);
+                        ctx.LoanChainStarted = true;
+                    }
+                }
+                catch { }
+            }
+            if (ctx.LoanChainStarted)
+                foreach (var slot in ctx.Loan.Values) pending += PeekSlot(bindings, slot);
         }
         return pending;
     }
@@ -554,7 +706,7 @@ internal static class SquadReport
         return (slot.Value == null || slot.NeedsRecheck) ? 1 : 0;
     }
 
-    private static JsonArray CollectPlayers(BindingSubsystem bindings, List<PlayerCtx> plants)
+    private static JsonArray CollectPlayers(BindingSubsystem bindings, List<PlayerCtx> plants, Dictionary<int, string> clubNames)
     {
         var players = new JsonArray();
         foreach (var ctx in plants)
@@ -562,6 +714,7 @@ internal static class SquadReport
             // Final sweep + cleanup (unbind/close every channel opened for this player).
             foreach (var slot in ctx.Top.Values) { PeekSlot(bindings, slot); CloseSlot(bindings, ctx.Interop, slot); }
             foreach (var slot in ctx.Contract.Values) { PeekSlot(bindings, slot); CloseSlot(bindings, ctx.Interop, slot); }
+            foreach (var slot in ctx.Loan.Values) { PeekSlot(bindings, slot); CloseSlot(bindings, ctx.Interop, slot); }
 
             if (ctx.Error != null)
             {
@@ -594,9 +747,33 @@ internal static class SquadReport
             };
             var wageNode = DecodeSlot(ctx.Contract, "Wage");
 
+            // status:null means not on loan at all -- club/until/recallable
+            // stay null too. recallable has no discoverable binding
+            // (exhaustive live search across ContractClauses and ~50
+            // candidate property names found nothing) so it is always null,
+            // per this feature's own spec allowance for that outcome.
+            JsonObject loanNode;
+            if (ctx.LoanStatus == null)
+            {
+                loanNode = new JsonObject { ["status"] = null, ["club"] = null, ["until"] = null, ["recallable"] = null };
+            }
+            else
+            {
+                string otherClubName = null;
+                if (ctx.LoanOtherClubUid.HasValue) clubNames?.TryGetValue(ctx.LoanOtherClubUid.Value, out otherClubName);
+                loanNode = new JsonObject
+                {
+                    ["status"] = ctx.LoanStatus,
+                    ["club"] = otherClubName,
+                    ["until"] = DecodeSlot(ctx.Loan, "EndDate"),
+                    ["recallable"] = null,
+                };
+            }
+
             var missing = new JsonArray();
             foreach (var kv in ctx.Top) if (kv.Value.Value == null) missing.Add(kv.Value.Note != null ? kv.Key + " (" + kv.Value.Note + ")" : kv.Key);
             foreach (var kv in ctx.Contract) if (kv.Value.Value == null) missing.Add(kv.Value.Note != null ? kv.Key + " (" + kv.Value.Note + ")" : kv.Key);
+            foreach (var kv in ctx.Loan) if (kv.Value.Value == null) missing.Add(kv.Value.Note != null ? kv.Key + " (" + kv.Value.Note + ")" : kv.Key);
             // PositionRole is never planted at all (see BuildTopProps) --
             // still surfaced here so callers see it's known-unavailable
             // rather than silently absent.
@@ -614,6 +791,7 @@ internal static class SquadReport
                 ["perceived_potential_ability"] = DecodeSlot(ctx.Top, "PerceivedPotentialAbility"),
                 ["wage"] = wageNode,
                 ["contract"] = contract,
+                ["loan"] = loanNode,
                 ["missing"] = missing,
             });
         }
@@ -625,6 +803,212 @@ internal static class SquadReport
         if (!slot.Bound) return;
         try { var k = slot.Key; bindings?.Unbind(ref k, slot.Cb); } catch { }
         try { interop?.CloseChannel(slot.Key); } catch { }
+    }
+
+    // ----------------------------------------------------- loaned-out roster
+    //
+    // Club.PlayersOutOnLoan (club-level, confirmed live) is the only source
+    // for players who are out on loan but not part of the squad's own
+    // Team.Players binding (live-checked: only 8 of 25 known loaned-out
+    // uids on the probed save overlapped with the 31-player MainTeam
+    // roster -- the other 17 sit on their loan destination's own team and
+    // are invisible to Team.Players entirely). Fabricates the club exactly
+    // like PlantTeam fabricates a team, but reads a different rooted child
+    // ("PlayersOutOnLoan" instead of "Players") and skips the Name fetch
+    // (the caller already has the club's name from the earlier club read).
+
+    private sealed class ListPlant
+    {
+        public string Error;
+        public Bindings.Key RootKey;
+        public Bindings.Key ListKey;
+        public Bindings.ValueChangedCallback ListCb;
+        public FM.GamePlugin.GameInteropSubsystem Interop;
+        public TypedValue ListValue;
+        public bool ListLanded;
+    }
+
+    private static ListPlant PlantEntityList(BindingSubsystem bindings, string kind, int uid, string propName)
+    {
+        var plant = new ListPlant();
+        if (!GameSubsystems.TryGet<FM.GamePlugin.GameInteropSubsystem>(out var interop) || interop == null)
+        {
+            plant.Error = "game-interop-subsystem-not-found";
+            return plant;
+        }
+        plant.Interop = interop;
+
+        SI.Interop.InteropReference fabricated;
+        try
+        {
+            fabricated = kind switch
+            {
+                "club" => new FM.UI.ClubReference(uid),
+                "team" => new FM.UI.TeamReference(uid),
+                _ => null,
+            };
+        }
+        catch (Exception e) { plant.Error = "fabricate-ctor-failed: " + e.Message; return plant; }
+        if (fabricated == null) { plant.Error = "unknown-kind"; return plant; }
+
+        TypedValue wrapped;
+        try { wrapped = TypedValue.Create<Il2CppSystem.Object>(fabricated.Cast<Il2CppSystem.Object>()); }
+        catch (Exception e) { plant.Error = "typedvalue-create-failed: " + e.Message; return plant; }
+
+        var path = "__bridge.sqlist." + Interlocked.Increment(ref _counter);
+        Bindings.Key rootKey;
+        try { rootKey = NativeBindings.CreatePath(bindings, path, Bindings.NodeFlags.Default); }
+        catch (Exception e) { plant.Error = "create-parent-failed: " + e.Message; return plant; }
+        plant.RootKey = rootKey;
+
+        try
+        {
+            plant.ListKey = NativeBindings.CreateRooted(bindings, rootKey, propName, Bindings.NodeFlags.RequiresContext);
+            plant.ListCb = Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Bindings.ValueChangedCallback>(
+                (Action<Bindings.Key, TypedValue>)((k, v) =>
+                {
+                    plant.ListValue = v;
+                    plant.ListLanded = v != null;
+                }));
+            bindings.Bind(ref plant.ListKey, plant.ListCb);
+        }
+        catch (Exception e) { plant.Error = "bind-failed: " + e.Message; return plant; }
+
+        try { bindings.Set(ref rootKey, wrapped, Bindings.SetFlags.UpdateHandler | Bindings.SetFlags.ForceUpdateValue); }
+        catch (Exception e) { plant.Error = "parent-set-failed: " + e.Message; }
+        return plant;
+    }
+
+    private static int PeekEntityList(BindingSubsystem bindings, ListPlant plant)
+    {
+        if (plant.Error != null || plant.ListLanded) return 0;
+        try
+        {
+            var d = bindings.Get(ref plant.ListKey);
+            if (d != null) { plant.ListValue = d; plant.ListLanded = true; }
+        }
+        catch { }
+        return plant.ListLanded ? 0 : 1;
+    }
+
+    private static List<int> CollectPersonUids(BindingSubsystem bindings, ListPlant plant, int maxRows)
+    {
+        PeekEntityList(bindings, plant);
+        var uids = new List<int>();
+        if (plant.Error == null && plant.ListLanded)
+        {
+            try
+            {
+                var boxed = plant.ListValue.Get();
+                var list = boxed?.TryCast<Il2CppSystem.Collections.IList>();
+                if (list != null)
+                {
+                    var rows = new JsonArray();
+                    var returned = 0;
+                    Navigator.ReadRows(list, maxRows, rows, ref returned);
+                    foreach (var r in rows)
+                    {
+                        var ro = r as JsonObject;
+                        if (ro?["uid"] != null && (string)ro["refType"] == "Person") uids.Add((int)ro["uid"]);
+                    }
+                }
+            }
+            catch { }
+        }
+        try
+        {
+            var lk = plant.ListKey; bindings?.Unbind(ref lk, plant.ListCb);
+            plant.Interop?.CloseChannel(lk);
+        }
+        catch { }
+        return uids;
+    }
+
+    // ------------------------------------------------------- loan club names
+    //
+    // A player's `loan.club` needs a display name for whichever club uid
+    // OnLoanFrom/Club resolved (see AdvancePlayers) -- neither prop carries
+    // one itself (both land as bare ClubReference $refs, uid+table only).
+    // Bounded by the number of DISTINCT loan-related clubs across the whole
+    // response (typically a handful), not by player count: one fabricate+
+    // bind+read per unique uid, same one-hop Name fetch PlantTeam already
+    // does for a team.
+
+    private sealed class ClubNamePlant
+    {
+        public int Uid;
+        public string Error;
+        public Bindings.Key RootKey;
+        public Bindings.Key NameKey;
+        public Bindings.ValueChangedCallback NameCb;
+        public FM.GamePlugin.GameInteropSubsystem Interop;
+        public string NameValue;
+    }
+
+    private static ClubNamePlant PlantClubName(BindingSubsystem bindings, int clubUid)
+    {
+        var plant = new ClubNamePlant { Uid = clubUid };
+        if (!GameSubsystems.TryGet<FM.GamePlugin.GameInteropSubsystem>(out var interop) || interop == null)
+        {
+            plant.Error = "game-interop-subsystem-not-found";
+            return plant;
+        }
+        plant.Interop = interop;
+
+        FM.UI.ClubReference fabricated;
+        try { fabricated = new FM.UI.ClubReference(clubUid); }
+        catch (Exception e) { plant.Error = "fabricate-ctor-failed: " + e.Message; return plant; }
+
+        TypedValue wrapped;
+        try { wrapped = TypedValue.Create<Il2CppSystem.Object>(fabricated.Cast<Il2CppSystem.Object>()); }
+        catch (Exception e) { plant.Error = "typedvalue-create-failed: " + e.Message; return plant; }
+
+        var path = "__bridge.sqcn." + Interlocked.Increment(ref _counter);
+        Bindings.Key rootKey;
+        try { rootKey = NativeBindings.CreatePath(bindings, path, Bindings.NodeFlags.Default); }
+        catch (Exception e) { plant.Error = "create-parent-failed: " + e.Message; return plant; }
+        plant.RootKey = rootKey;
+
+        try
+        {
+            plant.NameKey = NativeBindings.CreateRooted(bindings, rootKey, "Name", Bindings.NodeFlags.RequiresContext);
+            plant.NameCb = Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Bindings.ValueChangedCallback>(
+                (Action<Bindings.Key, TypedValue>)((k, v) =>
+                {
+                    try { plant.NameValue = FMBridge.Eyes.TreeWalker.Describe(v); } catch { }
+                }));
+            bindings.Bind(ref plant.NameKey, plant.NameCb);
+        }
+        catch (Exception e) { plant.Error = "bind-failed: " + e.Message; return plant; }
+
+        try { bindings.Set(ref rootKey, wrapped, Bindings.SetFlags.UpdateHandler | Bindings.SetFlags.ForceUpdateValue); }
+        catch (Exception e) { plant.Error = "parent-set-failed: " + e.Message; }
+        return plant;
+    }
+
+    private static int PeekClubName(BindingSubsystem bindings, ClubNamePlant plant)
+    {
+        if (plant.Error != null || plant.NameValue != null) return 0;
+        try
+        {
+            var d = bindings.Get(ref plant.NameKey);
+            if (d != null) plant.NameValue = FMBridge.Eyes.TreeWalker.Describe(d);
+        }
+        catch { }
+        return plant.NameValue == null ? 1 : 0;
+    }
+
+    private static string CollectClubName(BindingSubsystem bindings, ClubNamePlant plant)
+    {
+        PeekClubName(bindings, plant);
+        var name = plant.NameValue != null ? ReadEntity.Decode(plant.NameValue)?.ToString() : null;
+        try
+        {
+            var nk = plant.NameKey; bindings?.Unbind(ref nk, plant.NameCb);
+            plant.Interop?.CloseChannel(nk);
+        }
+        catch { }
+        return name;
     }
 
     // ------------------------------------------------------------- helpers
