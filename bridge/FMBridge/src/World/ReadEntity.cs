@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using SI.Bindable;
@@ -274,6 +275,7 @@ internal static class ReadEntity
                 {
                     entry = await ReadOneEntity(queue, kind, uid, checkPropNames, startedMs, TotalDeadlineMs);
                     PostProcessFound(entry, nameSynthetic);
+                    ApplyScoutingSummary(entry, kind);
 
                     if (wantsTransferValue)
                     {
@@ -425,6 +427,94 @@ internal static class ReadEntity
         {
             missing2.Add("TransferValue (ui-cell-not-read; player database row could not be located/scrolled/scraped)");
         }
+    }
+
+    /// <summary>
+    /// Per-player scouting summary, sibling of "data"/"missing" on every
+    /// person entry. This is a live-search finding, not a design choice: an
+    /// exhaustive live probe (2026-08-30, uid 25860 unscouted vs 7220/own-
+    /// squad fully known) found no per-player scouting-KNOWLEDGE-PERCENTAGE
+    /// binding reachable through the fabricate/bind channel machinery this
+    /// file uses -- candidates tried and failed to land a value: KnowledgeLevel
+    /// (a real PropertyIdentifierSet id that never fires off a fabricated
+    /// PersonReference), CanViewScoutingKnowledge (a club-scoped bool, wrong
+    /// context), PlayerKnowledge/ScoutingKnowledge/KnowledgePercentage/
+    /// ScoutingCompleteness/ScoutedPercentage/IsScouted/ScoutStatus and a
+    /// dozen more name guesses (all unknown-property-name), and
+    /// ComparisonPlayerReport/NationalReport (real PlayerReportReference
+    /// $refs, but that reference type doesn't cast to
+    /// DatabaseRecordReference so its uid can't be chased the way Club/
+    /// Nation refs are). So knowledge_pct is always null here -- honestly
+    /// reporting "no percentage source", never a guess -- and the two counts
+    /// are computed directly from whatever "Attribute*" fields this exact
+    /// call actually returned: known (landed as an exact {"value"}) vs
+    /// ranged (landed as a scouting-bounded {"min","max"}) -- see
+    /// StructureAttributeValue. Both are 0 when the call didn't touch the
+    /// attributes section at all, which is not itself "unscouted", just "not
+    /// asked" -- callers wanting a real signal should read the "attributes"
+    /// section (or explicit Attribute* props).
+    /// </summary>
+    private static void ApplyScoutingSummary(JsonObject entry, string kind)
+    {
+        if (!string.Equals(kind, "person", StringComparison.OrdinalIgnoreCase)) return;
+        if (entry?["data"] is not JsonObject data) return;
+
+        int known = 0, ranged = 0;
+        foreach (var kv in data)
+        {
+            if (!kv.Key.StartsWith("Attribute", StringComparison.Ordinal)) continue;
+            if (kv.Value is not JsonObject o) continue;
+            if (o.ContainsKey("value")) known++;
+            else if (o.ContainsKey("min")) ranged++;
+        }
+
+        entry["scouting"] = new JsonObject
+        {
+            ["knowledge_pct"] = null,
+            ["attributes_known"] = known,
+            ["attributes_ranged"] = ranged,
+        };
+    }
+
+    // Matches the plain "N-M" text FM renders for an unscouted attribute's
+    // estimated bound (live-observed, e.g. "2-4", "12-16") -- never a decimal
+    // or a signed number in practice (attributes are 1-20 integers), but the
+    // pattern is deliberately unambitious: anything it doesn't confidently
+    // recognize falls through to the {"raw"} bucket instead of a guessed split.
+    private static readonly Regex AttributeRangeRe = new(@"^(\d+)\s*-\s*(\d+)$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Structures an already-Decode()'d attribute value into the caller-
+    /// facing {"value"}|{"min","max"}|{"raw"} shape (see class doc / the
+    /// design note on ApplyScoutingSummary). Applied to every
+    /// "Attribute*"-prefixed prop read_entity returns, and reused by
+    /// QueryPlayers for the sample attributes its enrich path reads for the
+    /// same purpose -- one shared rule, not two parallel guesses at the same
+    /// text. A fully-known attribute decodes to a plain JSON number (the
+    /// DynamicNumber path in Decode()) -> {"value": N}. An unscouted
+    /// attribute the game can only bound-estimate decodes to a plain "N-M"
+    /// string -> {"min", "max"}. Anything else (a hidden personality stat
+    /// that returns literal text "Failed to get data", or any shape this
+    /// hasn't seen before) is carried through as {"raw": "<text>"} rather
+    /// than invented.
+    /// </summary>
+    internal static JsonObject StructureAttributeValue(JsonNode decoded)
+    {
+        if (decoded is JsonValue jv)
+        {
+            if (jv.TryGetValue<double>(out var num))
+                return new JsonObject { ["value"] = num };
+            if (jv.TryGetValue<string>(out var s) && s != null)
+            {
+                var m = AttributeRangeRe.Match(s.Trim());
+                if (m.Success
+                    && double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var lo)
+                    && double.TryParse(m.Groups[2].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var hi))
+                    return new JsonObject { ["min"] = lo, ["max"] = hi };
+                return new JsonObject { ["raw"] = s };
+            }
+        }
+        return new JsonObject { ["raw"] = decoded?.ToString() };
     }
 
     /// <summary>Removes a synthetically-requested prop (one RunAsync added to
@@ -874,14 +964,17 @@ internal static class ReadEntity
             }
             if (prop.Value != null)
             {
-                data[prop.Name] = Decode(prop.Value, prop.RefUid, prop.RefTable, prop.ResolvedDisplay, prop.ResolvedSort);
+                var decoded = Decode(prop.Value, prop.RefUid, prop.RefTable, prop.ResolvedDisplay, prop.ResolvedSort);
+                data[prop.Name] = prop.Name.StartsWith("Attribute", StringComparison.Ordinal)
+                    ? StructureAttributeValue(decoded)
+                    : decoded;
                 if (prop.Name == "Position")
                 {
                     // Additive decoded sibling -- raw bitmask stays
                     // under "Position" unchanged, decoded compact label
                     // ("GK"/"D (RLC)"/"AM (RL)"/...) goes in "PositionDecoded".
-                    var decoded = PositionDecode.Decode(prop.Value);
-                    if (decoded != null) data["PositionDecoded"] = decoded;
+                    var decodedPosition = PositionDecode.Decode(prop.Value);
+                    if (decodedPosition != null) data["PositionDecoded"] = decodedPosition;
                 }
             }
             else missing.Add(prop.Note != null ? prop.Name + " (" + prop.Note + ")" : prop.Name);

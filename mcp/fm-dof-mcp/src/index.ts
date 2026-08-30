@@ -149,11 +149,29 @@ const LOAN_NOTE =
   "player but has sent them away to 'club' — they can still be sold, and can only be recalled " +
   "early when 'recallable' is true. 'recallable' has no discoverable binding in-game and is " +
   "currently always null — treat null as unknown, never as false.";
+const ATTRIBUTE_SHAPE_NOTE =
+  "Every prop whose name starts with 'Attribute' (a person's 'attributes' section, e.g. " +
+  "'AttributeCrossing') comes back structured, never as a bare number or string: a fully-known " +
+  "value is {value: N}; a partially-known value — meaning the save hasn't fully scouted this " +
+  "player yet — is a range, {min: N, max: N}; anything else the game can't render as either " +
+  "(e.g. a small set of always-hidden personality attributes such as AttributeGreed/" +
+  "AttributePatience) comes back as {raw: \"<text>\"}. Never average or discard a {min,max} pair — " +
+  "it IS the answer for an unscouted player, not a placeholder for a missing one.";
+const SCOUTING_NOTE =
+  "A person entity also carries a top-level 'scouting' object: {knowledge_pct, attributes_known, " +
+  "attributes_ranged}. 'attributes_known' / 'attributes_ranged' count how many Attribute* props " +
+  "resolved to {value} vs {min,max} in THIS response (so they only reflect the 'attributes' " +
+  "section, or whichever Attribute* props you asked for via 'props') — a nonzero " +
+  "'attributes_ranged' means the player is not fully scouted. 'knowledge_pct' is always null: no " +
+  "live binding exposing a per-player scouting-knowledge percentage was found after exhaustive " +
+  "probing (candidates like KnowledgeLevel/CanViewScoutingKnowledge either don't exist per-player " +
+  "or never fire a value); treat the known/ranged counts as the scouting signal instead of waiting " +
+  "on knowledge_pct.";
 
 server.registerTool(
   "read_entity",
   {
-    description: `${READ_ENTITY_KIND_LEAD} ${MANIFEST_ON_READ_NOTE} ${REF_UID_NOTE} ${FOUND_FALSE_NOTE} ${LOAN_NOTE}`,
+    description: `${READ_ENTITY_KIND_LEAD} ${MANIFEST_ON_READ_NOTE} ${REF_UID_NOTE} ${FOUND_FALSE_NOTE} ${LOAN_NOTE} ${ATTRIBUTE_SHAPE_NOTE} ${SCOUTING_NOTE}`,
     inputSchema: {
       kind: z.enum(["person", "club", "nation", "competition"]).describe("Entity kind to read"),
       uids: UID_SCHEMA,
@@ -280,7 +298,16 @@ server.registerTool(
       "capped at 50 and a truncated enrich is never silent: the response always includes " +
       "'enrich_requested' (what you asked for, pre-cap), 'enrich_done' (how many actually came " +
       "back), 'enrich_truncated' (bool), and 'enrich_cap' (the hard ceiling, currently 50) — silent " +
-      "truncation was deliberately eliminated.",
+      "truncation was deliberately eliminated. Each enriched player also carries " +
+      "'sample_attributes' (Determination, WorkRate, Vision, Pace, Passing, Tackling — the same " +
+      "structured {value:N}|{min:N,max:N}|{raw:\"...\"} shape read_entity uses for attributes) and " +
+      "a 'scouting' object: {knowledge_pct: null (no live per-player percentage binding exists, " +
+      "see read_entity's note), attributes_known, attributes_ranged, scouted: bool}. 'scouted' is " +
+      "true only when every sampled attribute resolved to a known value — an unscouted player is " +
+      "still a legitimate result, not a data gap: a {min,max} range IS the current best answer for " +
+      "that attribute, so score it on its midpoint but keep the uncertainty in view rather than " +
+      "dropping the row. This scouting signal is enrich-only: base (non-enrich) uid-list results " +
+      "carry no per-player scouting information at all — enrich a narrowed candidate set to get it.",
     inputSchema: {
       max: z
         .number()

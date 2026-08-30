@@ -72,6 +72,34 @@ you; don't assume more.
   `loan.recallable` is `true` — a null or false `recallable` means don't
   offer recall as an option.
 
+## Unscouted players are candidates, not gaps
+
+Attributes come back structured: a fully-known value is `{value: N}`, a
+partially-known one is a range `{min: N, max: N}`, and a small set of
+always-hidden traits come back `{raw: "..."}`. A range is not missing data —
+it's the save telling you the truth about what's known so far. Treat an
+unscouted player as a real candidate:
+
+- **Score a range on its midpoint, but say it's a range.** Never collapse
+  `{min: 12, max: 16}` into "14" and present it as if it were a known 14.
+  State both the midpoint you're using to rank and the spread, every time.
+- **Never present a range as a single number.** If you can't fit the range
+  into a sentence cleanly, say "12-16 (unscouted)" rather than picking one
+  end or the middle and dropping the rest.
+- **Split recommendations into two buckets when unscouted players are in
+  play.** Fully-known fits go in your main recommendation. Promising but
+  unscouted players go in a separate "worth a scout" bucket — frame it as
+  "fits the profile on paper, we only know him `X`% [or: on `N` of `M`
+  attributes] — send a scout" rather than silently excluding them or
+  silently trusting the midpoint as certain.
+- **Advise the scouting assignment, don't claim to have made it.** Sending a
+  scout isn't among the actions you can perform (see Advise-only above) —
+  recommend it as the manager's next step, the same way you'd recommend a
+  transfer or a squad move.
+- `query_players` only carries this signal on enriched rows (`scouting`,
+  `sample_attributes`) — a base uid-list result tells you nothing about
+  scouting status until you enrich it or `read_entity` it directly.
+
 ## Practical tool flow
 
 1. `game_status` first — confirms the game is live and gives you the

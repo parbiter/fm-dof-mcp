@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -107,7 +108,21 @@ internal static class QueryPlayers
     // small subset of SquadReport's list: just the essentials (age,
     // position fit, PA, wage, contract end), not the full 14-way Ability*
     // positional-fit family.
-    private static readonly string[] Phase1Props = { "Name", "Age", "Position", "PerceivedPotentialAbility", "FullContract" };
+    // Sample attributes read alongside the other Phase1 props for enrich
+    // ONLY (never for the filter-only plant FilterProps drives) -- a small,
+    // diverse mix (physical/mental/technical, all present for outfield AND
+    // goalkeepers) cheap enough to fold into the same batched channel plant
+    // rather than a separate pass. Their sole purpose is the per-player
+    // `scouting` signal below: whether the game handed back an exact
+    // {"value"} or a scouting-bounded {"min","max"} for each -- see
+    // ReadEntity.StructureAttributeValue for the shared decode rule and
+    // ApplyScoutingSummary's class doc for why no live knowledge-PERCENTAGE
+    // binding exists to report instead.
+    private static readonly string[] ScoutingSampleAttributes =
+        { "AttributeDetermination", "AttributeWorkRate", "AttributeVision", "AttributePace", "AttributePassing", "AttributeTackling" };
+    private static readonly string[] Phase1Props =
+        new[] { "Name", "Age", "Position", "PerceivedPotentialAbility", "FullContract" }
+        .Concat(ScoutingSampleAttributes).ToArray();
     private static readonly string[] FilterProps = { "Age", "Position" };
     private static readonly string[] Phase2Props = { "Wage", "EndDate" };
 
@@ -1243,6 +1258,23 @@ internal static class QueryPlayers
             else if (transferValueTexts != null)
                 missing.Add("transfer_value (ui-cell-not-read-for-this-row)");
 
+            // Sample attributes -> the same {"value"}|{"min","max"}|{"raw"}
+            // shape read_entity uses (ReadEntity.StructureAttributeValue),
+            // keyed by the short name (prefix stripped) so callers don't have
+            // to repeat "Attribute" six times. Missing/unbound samples are
+            // simply absent from this object rather than null-padded.
+            var sampleAttributes = new JsonObject();
+            int attrKnown = 0, attrRanged = 0;
+            foreach (var attrName in ScoutingSampleAttributes)
+            {
+                var decodedAttr = DecodeSlot(ctx.Phase1, attrName);
+                if (decodedAttr == null) continue;
+                var structured = ReadEntity.StructureAttributeValue(decodedAttr);
+                sampleAttributes[attrName.Substring("Attribute".Length)] = structured;
+                if (structured.ContainsKey("value")) attrKnown++;
+                else if (structured.ContainsKey("min")) attrRanged++;
+            }
+
             players.Add(new JsonObject
             {
                 ["uid"] = ctx.Uid,
@@ -1254,6 +1286,14 @@ internal static class QueryPlayers
                 ["wage"] = DecodeSlot(ctx.Phase2, "Wage"),
                 ["contract_end_date"] = DecodeSlot(ctx.Phase2, "EndDate"),
                 ["transfer_value"] = transferValueNode,
+                ["sample_attributes"] = sampleAttributes,
+                ["scouting"] = new JsonObject
+                {
+                    ["knowledge_pct"] = null,
+                    ["attributes_known"] = attrKnown,
+                    ["attributes_ranged"] = attrRanged,
+                    ["scouted"] = attrRanged == 0 && attrKnown > 0,
+                },
                 ["missing"] = missing,
             });
         }
