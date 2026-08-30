@@ -1,110 +1,119 @@
 # fm-dof-mcp
 
 An advise-only **Director of Football you chat with inside Football
-Manager 26**. A "Chat with DoF" entry appears in the game's Recruitment
-menu and opens a chat panel docked over your running career: ask it
-football questions — squad depth, transfer targets, wage headroom — and
-its answers are backed by live reads from the game itself, not guesses.
+Manager 26**. It's a mod for macOS (Apple Silicon) that adds a "Chat with
+DoF" entry to the game's Recruitment menu and opens a chat panel docked
+over your running career. Ask it football questions — squad depth,
+transfer targets, wage headroom — and its answers are backed by live reads
+from your actual save, not generic football takes. It can also add players
+to your shortlist when you ask it to, but it never saves, advances time, or
+does anything else on your behalf.
 
-It is three pieces:
-
-- **`bridge/`** — a [BepInEx 6](https://docs.bepinex.dev/) IL2CPP plugin
-  that runs inside FM26. It draws the chat UI (menu entry, panel, bubbles)
-  and exposes a small, read-mostly set of operations over a localhost
-  WebSocket (game state, entity reads, squad/player queries, and shortlist
-  management — nothing that saves or advances the game).
-- **`mcp/fm-dof-mcp/`** — an [MCP](https://modelcontextprotocol.io) server
-  (Node/TypeScript) that turns those operations into 8 MCP tools plus a
-  `dof-persona` prompt. This is the DoF's entire tool surface — the chat
-  runs on it, and you can also point any external MCP client at it (see
-  below).
-- **`scripts/dof_chat_service.mjs`** — the host-side service that connects
-  the two: it polls the panel for what you typed, answers via a headless
-  Codex or Claude Code session with the MCP tools attached, and posts the
-  reply back as a chat bubble. Codex with GPT-5.6 Luna is the default; the
-  bridge launches the selected provider automatically once deployed.
-
-## Demo
+## Example
 
 > "Find me a left-back to replace Estupiñán, under €25M, who'd accept our
-> wages." → argued recommendations with real numbers → "shortlist the top
-> five" → the shortlist appears in the running game.
+> wages."
 
-That's the shape of a session. A condensed excerpt from a real run, over the
-actual 8-tool MCP surface, against a live (never saved or advanced) career:
+This is from a real (never saved or advanced) career session, lightly
+edited for length. The DoF checked the actual transfer budget and wage
+bill first — in this save, wages were already at 95% of budget, so any
+marquee signing would have to be paid for by outgoing wages, not fresh
+room. It then pulled up scouted left-backs and wing-backs and argued each
+one on its own numbers instead of a vague "he's decent": one flagged
+"pursue now," another "monitor, don't commit," a third "watchlist only,
+over budget." One recommendation, Raphaël Guerreiro, came back with his
+actual wage range (€5.34M–€6.96M) and transfer value (€8.8M–€10.5M),
+pulled straight from the game.
 
-```
-> game_status
-{ "processing": false, "date_iso": "2025-11-01 09:00", "continue_state": "CanContinue" }
+> "Shortlist the top five."
 
-> my_club
-{ "budgets": { "transfer_budget": 17537989 },
-  "wages": { "wage_budget_used_pct": 95.21 } }
-```
+Five players appeared in the game's own shortlist a moment later — the
+same shortlist you'd build by hand, just faster. The in-game date was
+identical before and after: nothing was saved or advanced.
 
-Reading this honestly: the stated transfer budget is below the manager's
-€25M ceiling, and wages are already at 95.2% of budget — any incoming
-signing is effectively paid for by outgoing wages, not fresh headroom.
+A captured demo video/GIF of a full session is coming — this section will
+be updated with it.
 
-```
-> get_role_attributes { "position": "D (L)" }
-{ "role_name": "Wing Back",
-  "key_attributes": ["Crossing","Marking","Tackling","Teamwork","Work Rate","Acceleration","Stamina","Pace"] }
+## Requirements at a glance
 
-> squad_report { "squad": "first" }
-# Estupiñán: uid 32444, PPA 146, wage €4.63M p/a — the baseline to beat
+- **A Mac with Apple Silicon** (M1 or newer). No Windows, no Intel Mac —
+  see [Platform support](#platform-support) below.
+- **Football Manager 26** via Steam.
+- Comfortable enough with Terminal to paste a handful of commands — see
+  [`docs/INSTALL.md`](docs/INSTALL.md) for every step, exact commands
+  included.
+- An account with **one** of the two AI providers the chat can use:
+  [Claude Code](https://claude.com/claude-code) (needs an Anthropic
+  account) or [Codex](https://developers.openai.com/codex/cli) (needs an
+  OpenAI account). Either can involve a subscription or paid API usage —
+  check the provider's own site for current pricing before you pick one.
 
-> query_players { "max": 900, "filters": { "scouted_only": true }, "enrich": true, "enrich_max": 50 }
-# 4 genuine D(L)/WB(L) matches inside the enrich window, e.g.:
-{ "uid": 31521, "name": "Raphaël Guerreiro", "perceived_potential_ability": 148,
-  "wage": { "display": "€5.34M - €6.96M p/a" },
-  "transfer_value": { "display": "€8.8M - €10.5M", "sort": 9650000 } }
-```
+## Install
 
-The recommendation that followed argued each name on its own numbers —
-"pursue now," "flag the price," "monitor, don't commit," "watchlist only,
-over budget" — never a bare "good player." Then, on request:
+See [`docs/INSTALL.md`](docs/INSTALL.md) for the full, numbered
+walkthrough — installing the mod loader, building the two small helper
+programs, signing in to an AI provider, and launching the game so the mod
+actually loads.
 
-```
-> shortlist { "action": "create", "name": "DoF Demo" }
-> shortlist { "action": "add", "uid": 31521, "name": "DoF Demo" }
-...
-> shortlist { "action": "list" }
-{ "selection": "DoF Demo | 5 Players", "uids": [31521, 9793, 29291, 23991, 12117] }
-```
+## Playing with it
 
-Five uids, verified present in the running game's own shortlist — the same
-check any MCP client would run, no internal cross-check needed. The game's
-in-game date was identical before and after: nothing was saved or advanced.
+1. Launch Football Manager 26 through the special launcher script set up
+   during install — not a plain double-click through Steam, which can
+   skip the mod loader entirely. See
+   [`docs/INSTALL.md`](docs/INSTALL.md#6-launch-the-game-so-the-mod-loads-2-min)
+   for why and how.
+2. Load into a career.
+3. Open the **Recruitment** menu in the sidebar and click **Chat with
+   DoF**.
+4. Type a question and press Enter. A short status line shows while it
+   works — tool-heavy questions take roughly 10–30 seconds.
+5. Click **New chat** any time to start a fresh conversation; otherwise
+   the DoF remembers earlier questions, even across game sessions.
 
-A captured demo video/GIF of a full session is coming — this section will be
-updated with it.
+## What it can and can't do
 
-## How the chat works
+**Can:**
 
-The in-game panel is deliberately dumb — it renders bubbles and collects
-typed text, with a thinking indicator while the DoF works and a "New chat"
-button to start over. `scripts/dof_chat_service.mjs` runs on the host,
-polls the panel over the same localhost WebSocket, answers via headless
-Codex or Claude Code with the MCP tools attached (auth rides on the selected
-CLI's existing login), and posts the reply back. Choose with
-`DOF_CHAT_PROVIDER=codex|claude`; Codex is the default. Once
-`deploy_bridge.sh` has run, the bridge starts the service automatically with
-the game and stops it on exit — there is no manual step. The chat's tools are
-the MCP server's tools, nothing more — the advise-only surface below applies to
-everything the DoF can do. See
-[`docs/INSTALL.md`](docs/INSTALL.md#4-open-the-in-game-chat) for setup.
+- Read your live save — squad, budgets, wages, scouted players, tactical
+  roles, and more.
+- Answer with real numbers pulled from your save, not generic takes.
+- Add, remove, or create entries in your in-game shortlist, only when you
+  ask it to.
 
-## Using it from an external MCP client (optional)
+**Can't:**
 
-The same MCP server the chat runs on can be attached to any MCP client —
-Codex, Claude Code, Claude Desktop, or anything else that speaks MCP — for
-longer written analysis outside the game window. The demo transcript above is
-exactly that surface; see
-[`docs/INSTALL.md`](docs/INSTALL.md#optional-point-an-external-mcp-client-at-it)
-for client wiring.
+- Save your game, advance time, or continue to the next match/day.
+- Make a transfer offer, negotiate, or touch anything beyond the
+  shortlist.
+- Click around the game's other screens for you.
+- Make up a stat it doesn't have — if something isn't available, it says
+  so instead of guessing.
 
-## Design principles
+## Privacy
+
+Your save file itself is never uploaded anywhere. What does leave your Mac
+is the text you type into the chat, plus whatever player and club data
+your questions pull from the game (names, stats, wages, and similar) —
+sent to whichever AI provider you chose (Anthropic for Claude Code, OpenAI
+for Codex) so it can write the reply, the same way any normal use of that
+provider's chat tool works. If you'd rather nothing about your save left
+the machine, don't use the chat feature.
+
+## For developers
+
+The chat runs on a small [MCP](https://modelcontextprotocol.io) (Model
+Context Protocol — the standard way AI tools connect to external data and
+actions) server exposing 8 tools plus a `dof-persona` prompt. A BepInEx
+plugin inside the game exposes the read-mostly game data over a localhost
+WebSocket; the MCP server wraps that as tools; a small host-side service
+runs the actual chat loop. You can point any MCP-speaking client — Codex,
+Claude Code, Claude Desktop, or otherwise — at the same server for longer
+written analysis outside the game window. See
+[`docs/INSTALL.md`](docs/INSTALL.md#advanced-external-mcp-clients) for
+client wiring.
+
+<details>
+<summary>Design principles</summary>
 
 - **Advise-only.** There is no tool that saves the game, advances time, or
   drives arbitrary UI. The action surface is exactly one thing: shortlist
@@ -112,38 +121,37 @@ for client wiring.
   Recommending, arguing, and deciding stay separated from acting. (The
   in-game chat overlay adds UI elements of its own to draw bubbles in —
   it never reads or drives the game's screens.)
-- **Honest data, not guesses.** Every claim traces to a tool response. Reads
-  report `found:false` rather than fabricating plausible-looking values for
-  something that doesn't resolve; a `null` transfer value is reported as
-  "unknown or not for sale," never silently treated as zero or as "cheap."
+- **Honest data, not guesses.** Every claim traces to a tool response.
+  Reads report "not found" rather than fabricating plausible-looking
+  values for something that doesn't resolve; an unknown transfer value is
+  reported as "unknown or not for sale," never silently treated as zero
+  or as "cheap."
 - **No save/continue/screen-driving verbs, by construction.** This isn't a
-  policy enforced by a persona prompt — the server literally does not
-  register those tools, and the bridge itself doesn't compile the
-  corresponding dispatch code into the shipped DLL. A misbehaving or
-  jailbroken client still can't reach a save/advance/raw-UI-drive path,
-  because it doesn't exist in this binary.
-- **Vision = scout, not oracle.** The bundled `dof-persona` prompt instructs
-  the model to reason only from what the tools actually return for this
-  save, never from real-world football knowledge or memory of other saves —
-  FM26 changed its own tactical role system enough that outside priors are
+  policy enforced by a prompt — the server literally does not register
+  those tools, and the bridge itself doesn't compile the corresponding
+  code into the shipped plugin. A misbehaving or jailbroken client still
+  can't reach a save/advance/raw-UI-drive path, because it doesn't exist
+  in this binary.
+- **Vision = scout, not oracle.** The bundled persona prompt instructs the
+  model to reason only from what the tools actually return for this save,
+  never from real-world football knowledge or memory of other saves — FM26
+  changed its own tactical role system enough that outside priors are
   often simply wrong for this version.
 
-## Platform support (read this first)
+</details>
+
+## Platform support
 
 This is experimental, single-platform software:
 
 - **macOS, Apple Silicon (arm64) only.** No Windows or Intel Mac support.
-- Requires **BepInEx 6 IL2CPP**, which is itself bleeding-edge/unstable for
-  this game. Expect friction.
+- Requires a community-made compatibility layer to run BepInEx (the mod
+  loader) on this game and this chip at all — see
+  [`docs/INSTALL.md`](docs/INSTALL.md) for details. Expect friction; this
+  layer is itself new and can be unstable.
 - Not affiliated with, endorsed by, or supported by SEGA or Sports
-  Interactive. Football Manager is a trademark of Sports Interactive/SEGA.
-  Use at your own risk against your own game install.
-
-## Install
-
-See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walkthrough: BepInEx
-setup, building and deploying the bridge, building the MCP server, and
-opening the in-game chat.
+  Interactive. Football Manager is a trademark of Sports
+  Interactive/SEGA. Use at your own risk against your own game install.
 
 ## License
 
