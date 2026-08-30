@@ -760,14 +760,46 @@ internal static class QueryPlayers
         // so the fast-path was silently unreachable and every call re-drove
         // the full Portal->Recruitment->tab teardown/rebuild it was written
         // to avoid.
+        //
+        // Both of the checks above only look at a UI Toolkit WIDGET's own
+        // content (name/rect/children) -- they cannot tell a genuinely
+        // foreground table from a leftover one whose node simply hasn't
+        // been torn down yet after the player navigated to a completely
+        // different screen (Squad, Tactics, Schedule, ...). Close that hole
+        // with an identity check against PanelManager's OWN open/close
+        // bookkeeping (Navigator.IsPanelActuallyOpen): once we've resolved
+        // RecruitmentScreen's PanelID at least once (every full re-nav
+        // below does this), require that PanelManager itself still reports
+        // RecruitmentScreen open before trusting the fast path at all. When
+        // the id hasn't been resolved yet (first call in the process),
+        // KnowsPanelId is false and this check is skipped rather than
+        // wrongly blocking -- see Navigator.Nav.cs doc comment.
+        bool recruitmentKnown = Navigator.KnowsPanelId("RecruitmentScreen");
+        bool recruitmentOpenFast = !recruitmentKnown || await OnQueue(queue, _ => Navigator.IsPanelActuallyOpen("RecruitmentScreen"));
         if (already?["ok"]?.GetValue<bool>() == true && AsInt(already["count"]) > 0 && alreadyIsRealTable
+            && recruitmentOpenFast
             && await PollPlayerDatabaseActive(queue, FastPathActiveCheckMs))
         {
             int fastCount = await StabilizePlayertableCount(queue, NavDeadlineMs);
-            steps.Add(new JsonObject { ["step"] = "fast-path:already-on-player-database", ["count"] = fastCount });
+            steps.Add(new JsonObject
+            {
+                ["step"] = "fast-path:already-on-player-database",
+                ["count"] = fastCount,
+                ["recruitment_panel_known"] = recruitmentKnown,
+                ["recruitment_panel_open"] = recruitmentOpenFast,
+            });
             if (fastCount > 0) return (true, null, steps, fastCount);
             // Fell through (stabilization failed) -- drop to the full
             // re-nav path below rather than failing outright.
+        }
+        else if (already?["ok"]?.GetValue<bool>() == true && AsInt(already["count"]) > 0 && alreadyIsRealTable && !recruitmentOpenFast)
+        {
+            // The widget-content markers looked right but PanelManager says
+            // RecruitmentScreen is NOT open -- exactly the stale-widget
+            // false-positive this check exists to catch. Log it and fall
+            // through to the full re-nav rather than silently trusting a
+            // screen the game itself says isn't showing.
+            steps.Add(new JsonObject { ["step"] = "fast-path:rejected-stale-widget-recruitment-not-open" });
         }
 
         var portalOpen = await OnQueue(queue, _ => Navigator.NavOpen("PortalScreen"));
@@ -924,7 +956,13 @@ internal static class QueryPlayers
             if (pdActive) break;
         }
         if (!pdActive)
-            return (false, "player-database-tab-activation-failed (checkbox column never appeared; screen likely still on Overview)", steps, 0);
+        {
+            bool recruitmentStillOpen = Navigator.KnowsPanelId("RecruitmentScreen")
+                && await OnQueue(queue, _ => Navigator.IsPanelActuallyOpen("RecruitmentScreen"));
+            return (false, "player-database-tab-activation-failed (checkbox column never appeared; " +
+                (recruitmentStillOpen ? "RecruitmentScreen is open but Player Database sub-tab never activated)"
+                                       : "RecruitmentScreen itself is not open -- screen was navigated away)"), steps, 0);
+        }
 
         return (true, null, steps, finalCount);
     }
@@ -972,7 +1010,23 @@ internal static class QueryPlayers
             {
                 int x = AsInt(best["x"]), y = AsInt(best["y"]), w = AsInt(best["w"]), h = AsInt(best["h"]);
                 var scan = await OnQueue(queue, _ => Navigator.UiFind2("unity-checkmark", 50, x, y, x + w, y + h, false));
-                if (scan?["ok"]?.GetValue<bool>() == true && AsInt(scan["count"]) > 0) return true;
+                if (scan?["ok"]?.GetValue<bool>() == true && AsInt(scan["count"]) > 0)
+                {
+                    // Name+rect+checkbox all look right, but that is still
+                    // only the WIDGET's own content -- a leftover node from
+                    // a screen the player has since navigated away from can
+                    // satisfy every one of those checks while sitting
+                    // hidden behind Squad/Tactics/Schedule/etc. Cross-check
+                    // against PanelManager's own bookkeeping (see
+                    // Navigator.IsPanelActuallyOpen doc comment) whenever
+                    // we've resolved RecruitmentScreen's id at least once;
+                    // skip the cross-check only when we never have (first
+                    // call in the process) since there's nothing to compare
+                    // against yet.
+                    if (!Navigator.KnowsPanelId("RecruitmentScreen")
+                        || await OnQueue(queue, _ => Navigator.IsPanelActuallyOpen("RecruitmentScreen")))
+                        return true;
+                }
             }
             if (Environment.TickCount64 >= deadline) return false;
             await Task.Delay(PollIntervalMs);

@@ -288,6 +288,7 @@ internal static partial class Navigator
             if (status == "Succeeded")
             {
                 var pid = handle.Result;
+                if (pid != null) _knownPanelIds[name] = pid;
                 var pm = Pm();
                 if (pm == null) { Emit(false, name, "panelmanager-null"); }
                 else
@@ -377,6 +378,57 @@ internal static partial class Navigator
         finally
         {
         }
+    }
+
+    /// <summary>
+    /// Cache of panel-name -> the actual PanelID asset PanelManager itself
+    /// hands back for that name (captured the moment any NavOpen(name) call
+    /// resolves its Addressables load, in Tick() below -- regardless of
+    /// whether the subsequent Open/Show mutation succeeds). This is the
+    /// SAME identity object PanelManager's own per-layer bookkeeping
+    /// (LayerInfo.IsPanelOpen) compares against, so once cached it lets
+    /// IsPanelActuallyOpen answer "is this named screen REALLY the
+    /// foreground panel right now" straight from PanelManager's own
+    /// open/close pipeline -- a source of truth a stale/leftover UI
+    /// Toolkit widget (rect + children still present after its owning
+    /// panel closed) cannot fool, unlike name+rect+content markers.
+    /// </summary>
+    private static readonly Dictionary<string, PanelID> _knownPanelIds = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True once a NavOpen(name) call has resolved and cached that
+    /// name's PanelID. Callers use this to distinguish "confirmed not open"
+    /// from "we've never resolved this id yet, can't verify" -- the latter
+    /// must not block a check that otherwise has no way to fail safe.</summary>
+    internal static bool KnowsPanelId(string panelName) =>
+        !string.IsNullOrEmpty(panelName) && _knownPanelIds.ContainsKey(panelName);
+
+    /// <summary>
+    /// Authoritative "is this named screen actually open right now" check,
+    /// straight off PanelManager's own per-layer Open bookkeeping -- NOT a
+    /// UI Toolkit widget scan. Returns false (never throws) when the name
+    /// hasn't been cached yet (see KnowsPanelId) or PanelManager can't be
+    /// reached.
+    /// </summary>
+    internal static bool IsPanelActuallyOpen(string panelName)
+    {
+        try
+        {
+            if (!_knownPanelIds.TryGetValue(panelName, out var pid) || pid == null) return false;
+            var pm = Pm();
+            if (pm == null) return false;
+            var layers = pm.Layers;
+            int n;
+            try { n = layers != null ? layers.Length : 0; } catch { n = 0; }
+            for (int i = 0; i < n; i++)
+            {
+                PanelManager.LayerInfo layer;
+                try { layer = layers[i]; } catch { continue; }
+                if (layer == null) continue;
+                try { if (layer.IsPanelOpen(pid)) return true; } catch { }
+            }
+            return false;
+        }
+        catch { return false; }
     }
 
     private static PanelID _verifyPid;
